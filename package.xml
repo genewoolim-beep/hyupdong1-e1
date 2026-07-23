@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>svg_drawing</name>
+  <version>0.0.1</version>
+  <description>
+    Doosan M0609 협동로봇으로 아크릴 표면에 SVG(만다라 라인아트)를 스크래치 드로잉하는
+    ROS2 Humble 패키지. SVG 벡터(path/line/polyline/polygon/circle/ellipse/rect)를 직접
+    분석·샘플링해 로봇 경로를 생성한다. (OpenCV edge/contour 미사용)
+  </description>
+  <maintainer email="genewoolim@gmail.com">gene</maintainer>
+  <license>Apache-2.0</license>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>svg_drawing_interfaces</depend>
+  <depend>dsr_common2</depend>
+  <depend>dsr_msgs2</depend>
+
+  <!-- 순수 파이썬 의존성: svgpathtools 는 rosdep key 가 없어 pip 설치 필요.
+       (pip install svgpathtools numpy)  README/주석 참고 -->
+  <exec_depend>python3-numpy</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

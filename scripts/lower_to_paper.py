@@ -35,7 +35,7 @@ import rclpy
 import DR_init
 
 DEFAULT_SVG = os.path.expanduser(
-    '~/ws_cobot_pjt/ws_dsr/src/svg_drawing/samples/tiger3_signed.svg')
+    '~/ws_cobot_pjt/ws_dsr/src/svg_drawing/samples/octagon_spiral.svg')
 
 
 def parse_args():
@@ -50,11 +50,20 @@ def parse_args():
     ap.add_argument('--start-z', type=float, default=340.0,
                     help='홈에서 이 Base Z(mm)까지 적당한 속도로 먼저 이동 후 키보드 미세조정. '
                          '기본 340mm(표면 74~100보다 훨씬 위라 안전). 블라인드 이동 끄려면 큰 값(예: 9999)')
+    ap.add_argument('--surface-z', type=float, default=10.0,
+                    help='표면 Z(mm). 기본 10.0mm — 대화형 하강(Enter/step/키보드) 전부 생략하고 '
+                         '홈에서 바로 이 높이로 이동해 표면으로 확정, 곧장 그리기 시작. '
+                         '⚠ 검증 없이 그대로 내려가니 값이 틀리면 위험(펜 박힘/뜸). '
+                         '표면이 달라졌으면 --surface-z 로 새 값을, 대화형으로 다시 잡으려면 --no-auto-z')
+    ap.add_argument('--no-auto-z', dest='auto_z', action='store_false', default=True,
+                    help='--surface-z 자동이동을 끄고 예전처럼 키보드로 눈으로 하강(안전하게 재확인하고 싶을 때)')
     ap.add_argument('--start-vel', type=float, default=52.0,
                     help='start-z 까지 이동 속도(mm/s). 기본 52(40에서 +30%). 낮추면 더 천천히')
-    ap.add_argument('--jump-vel', type=float, default=35.0,
-                    help='z<값> 지정 점프 이동 속도(mm/s). 기본 35(Enter/step 미세조정용 15보다 빠름). '
-                         '점프 후에는 다시 15로 돌아가 미세조정은 그대로 느림')
+    # 안전 리셋: 35→87.5→175→...→252까지 누적 상승시켰던 걸, 컨트롤러 재기동 후 클램핑
+    # 없이 그대로 적용돼 위험해진 게 확인돼 최초 실기 검증값(35)으로 되돌림.
+    ap.add_argument('--jump-vel', type=float, default=29.75,
+                    help='z<값> 지정 점프 이동 속도(mm/s), --surface-z 자동하강에도 사용. '
+                         '기본 29.75(35에서 -15%). 점프 후에는 다시 15로 돌아가 미세조정은 그대로 느림')
     ap.add_argument('--min-z', type=float, default=70.0,
                     help='자동 하강 안전 바닥(mm). 접촉 없이 이 높이 도달하면 정지(그 아래로 안 내려감). '
                          '기본 70mm(표면74 근처). 표면이 더 낮으면 이 값을 낮추세요')
@@ -63,8 +72,9 @@ def parse_args():
                          '눈으로 내려 done. 캘리 안 됐는데 켜면 힘을 못 읽어 표면 지나쳐 박힘')
     ap.add_argument('--contact-n', type=float, default=3.0,
                     help='(--auto-contact 시) 이 힘(N) 이상 감지되면 자동 정지·표면기록. 기본 3N')
-    ap.add_argument('--size', type=float, default=175.0,
-                    help='그림이 들어갈 정사각 작업영역 한 변(mm). 홈 XY 중심에 배치')
+    ap.add_argument('--size', type=float, default=218.75,
+                    help='그림이 들어갈 정사각 작업영역 한 변(mm). 홈 XY 중심에 배치. '
+                         '기본 218.75(175에서 +25%)')
     ap.add_argument('--pen-up', type=float, default=15.0,
                     help='획 사이 펜업 높이(표면 위 mm)')
     ap.add_argument('--off-x', type=float, default=0.0,
@@ -78,8 +88,8 @@ def parse_args():
     ap.add_argument('--press-mm', type=float, default=0.25,
                     help='(위치제어) 측정 표면보다 이만큼 더 눌러 긋는다(mm) = 일정 깊이=일정 압력 효과. '
                          '기본 0.25mm. 연하면 0.3~0.5 올리고, 과하면 0.15/0.1 로')
-    ap.add_argument('--force-n', type=float, default=7.0,
-                    help='아크릴을 누르는 목표 힘(N). 기본 7N(실기 검증됨). --force 로 켜면 이 힘으로 Fz 유지')
+    ap.add_argument('--force-n', type=float, default=5.5,
+                    help='아크릴을 누르는 목표 힘(N). 기본 5.5N. --force 로 켜면 이 힘으로 Fz 유지')
     ap.add_argument('--force-sign', type=float, default=-1.0,
                     help='누르는 방향 부호. -1=Base -Z(아래로). 설치 자세에 맞춰 조정')
     ap.add_argument('--stiffness-z', type=float, default=20.0,
@@ -167,7 +177,8 @@ def main():
     print(f"[1] 준비자세로 이동(movej) {ready} ...")
     set_velx(30.0, 30.0)
     set_accx(60.0, 60.0)
-    movej(posj(*ready), vel=30.0, acc=30.0, ra=DR_MV_RA_DUPLICATE)
+    # vel/acc 30→25.5deg/s(-15%, "모든 동작 15% 감소" 일괄 적용).
+    movej(posj(*ready), vel=25.5, acc=25.5, ra=DR_MV_RA_DUPLICATE)
 
     home = cur_posx()
     x0, y0, z0 = home[0], home[1], home[2]
@@ -206,78 +217,90 @@ def main():
 
     surface_z = None
 
-    # 1) 홈을 start_z(기본 100mm)로 '한 번에' 이동(빠르게 — 표면 위라 안전)
-    if args.start_z < z0:
-        print(f"\n[3] 홈 → Z={args.start_z:.1f}mm 로 이동(속도 {args.start_vel:.0f}mm/s)...")
-        print("    ※ 종이가 홈 XY 아래에 있고 경로에 장애물 없는지 확인. E-stop 손 위에.")
-        set_velx(args.start_vel, 40.0)
-        set_accx(120.0, 120.0)
-        move_to(x0, y0, args.start_z, rx, ry, rz)
-        z = args.start_z
-        print(f"    → Z={z:.1f}mm 도착. 여기서 키보드로 미세조정하며 표면까지 내려가세요.")
+    if args.auto_z:
+        # ── 자동 모드: 표면 Z를 이미 아니까 대화형 하강 전부 생략, 바로 이동 ──
+        print(f"\n[3] --surface-z {args.surface_z:.2f}mm 지정됨 → 대화형 하강 생략, 바로 이동...")
+        print("    ⚠ 검증 없이 그대로 내려갑니다. 값이 틀리면 위험(펜 박힘/뜸). E-stop 손 위에.")
+        # 가속도 90→76.5(-15%, "모든 동작 15% 감소" 일괄 적용).
+        set_velx(args.jump_vel, 30.0)
+        set_accx(76.5, 90.0)
+        move_to(x0, y0, args.surface_z, rx, ry, rz)
+        z = args.surface_z
+        surface_z = args.surface_z
+        print(f"    ★ Z={surface_z:.2f}mm 표면으로 확정.")
     else:
-        print(f"\n[3] 홈 Z={z0:.1f}mm 에서 '키보드로 눈으로' 하강합니다(블라인드 이동 없음).")
-        print(f"    표면 높이를 확실히 아는 경우에만 --start-z 로 그 위 높이까지 이동 가능.")
-
-    set_velx(15.0, 30.0)                   # 이제부터 느리게
-    set_accx(60.0, 60.0)
-
-    # 2) (옵션) payload/TCP 캘리된 경우에만 자동 접촉정지. 기본은 건너뛰고 키보드.
-    if args.auto_contact:
-        print(f"    자동 하강(힘 {args.contact_n:.0f}N 감지 정지, 안전 바닥 {args.min_z:.0f}mm)...")
-        res = auto_descend_to_contact(args.min_z)
-        if res is True:
-            surface_z = z
-            print(f"    ★ 접촉 감지 → Z={surface_z:.2f}mm 표면 기록.")
-        elif res is None:
-            print("    [주의] 힘을 못 읽음 → 자동정지 불가. 아래 키보드로 눈으로 내리세요.")
+        # 1) 홈을 start_z(기본 100mm)로 '한 번에' 이동(빠르게 — 표면 위라 안전)
+        if args.start_z < z0:
+            print(f"\n[3] 홈 → Z={args.start_z:.1f}mm 로 이동(속도 {args.start_vel:.0f}mm/s)...")
+            print("    ※ 종이가 홈 XY 아래에 있고 경로에 장애물 없는지 확인. E-stop 손 위에.")
+            set_velx(args.start_vel, 40.0)
+            set_accx(120.0, 120.0)
+            move_to(x0, y0, args.start_z, rx, ry, rz)
+            z = args.start_z
+            print(f"    → Z={z:.1f}mm 도착. 여기서 키보드로 미세조정하며 표면까지 내려가세요.")
         else:
-            print(f"    [주의] 바닥({args.min_z:.0f}mm)까지 접촉 없음 → 키보드로 미세 진행.")
-    else:
-        print("    이제 키보드로 '눈으로 보며' 내리세요 — 종이에 살짝 닿으면 done.")
-        print("    (자동정지 없음 = 힘센서 의존 X = 안 박힘. 처음엔 Enter로, 가까우면 1+Enter)")
+            print(f"\n[3] 홈 Z={z0:.1f}mm 에서 '키보드로 눈으로' 하강합니다(블라인드 이동 없음).")
+            print(f"    표면 높이를 확실히 아는 경우에만 --start-z 로 그 위 높이까지 이동 가능.")
 
-    # 3) 키보드 하강: Enter=step 만큼 하강, u=상승, done=표면확정, q=취소
-    step = args.step
-    while surface_z is None:
-        line = input(f"  [Z={z:.2f} step={step:.2f}] Enter=하강 / 숫자=step / "
-                     f"z<값>=그Z로이동 / u=상승 / done / q > ").strip()
-        print(f"  [입력받음: '{line}']")
-        low = line.lower()
-        if line == '':
-            z -= step
-            move_to(x0, y0, z, rx, ry, rz)
-        elif low == 'u':
-            z += 3.0
-            move_to(x0, y0, z, rx, ry, rz)
-        elif low.startswith('z') or low.startswith('g'):
-            # z<값> / g<값> : 입력한 절대 Base Z(mm) 로 바로 이동
-            try:
-                target = float(low[1:].strip())
-            except ValueError:
-                print("  ? z 뒤에 숫자로 (예: z120 → Z=120mm 로 이동)")
-                continue
-            print(f"  Z={target:.1f}mm 로 이동({args.jump_vel:.0f}mm/s)... "
-                  f"{'⚠ 아래로 크게 내려갑니다' if z - target > 20 else ''}")
-            set_velx(args.jump_vel, 30.0)      # 점프는 빠르게
-            set_accx(90.0, 90.0)
-            z = target
-            move_to(x0, y0, z, rx, ry, rz)
-            set_velx(15.0, 30.0)               # 점프 후엔 다시 느린 미세조정 속도로 복귀
-            set_accx(60.0, 60.0)
-        elif low == 'done':
-            surface_z = z
-        elif low == 'q':
-            print("  취소 → 안전 높이로 복귀")
-            move_to(x0, y0, z0, rx, ry, rz)
-            _shutdown(dsr_node)
-            return
+        set_velx(15.0, 30.0)                   # 이제부터 느리게
+        set_accx(60.0, 60.0)
+
+        # 2) (옵션) payload/TCP 캘리된 경우에만 자동 접촉정지. 기본은 건너뛰고 키보드.
+        if args.auto_contact:
+            print(f"    자동 하강(힘 {args.contact_n:.0f}N 감지 정지, 안전 바닥 {args.min_z:.0f}mm)...")
+            res = auto_descend_to_contact(args.min_z)
+            if res is True:
+                surface_z = z
+                print(f"    ★ 접촉 감지 → Z={surface_z:.2f}mm 표면 기록.")
+            elif res is None:
+                print("    [주의] 힘을 못 읽음 → 자동정지 불가. 아래 키보드로 눈으로 내리세요.")
+            else:
+                print(f"    [주의] 바닥({args.min_z:.0f}mm)까지 접촉 없음 → 키보드로 미세 진행.")
         else:
-            try:
-                step = float(line)
-                print(f"  step → {step:.2f}mm")
-            except ValueError:
-                print("  ? 모르는 입력(Enter/숫자/z<값>/u/done/q)")
+            print("    이제 키보드로 '눈으로 보며' 내리세요 — 종이에 살짝 닿으면 done.")
+            print("    (자동정지 없음 = 힘센서 의존 X = 안 박힘. 처음엔 Enter로, 가까우면 1+Enter)")
+
+        # 3) 키보드 하강: Enter=step 만큼 하강, u=상승, done=표면확정, q=취소
+        step = args.step
+        while surface_z is None:
+            line = input(f"  [Z={z:.2f} step={step:.2f}] Enter=하강 / 숫자=step / "
+                        f"z<값>=그Z로이동 / u=상승 / done / q > ").strip()
+            print(f"  [입력받음: '{line}']")
+            low = line.lower()
+            if line == '':
+                z -= step
+                move_to(x0, y0, z, rx, ry, rz)
+            elif low == 'u':
+                z += 3.0
+                move_to(x0, y0, z, rx, ry, rz)
+            elif low.startswith('z') or low.startswith('g'):
+                # z<값> / g<값> : 입력한 절대 Base Z(mm) 로 바로 이동
+                try:
+                    target = float(low[1:].strip())
+                except ValueError:
+                    print("  ? z 뒤에 숫자로 (예: z120 → Z=120mm 로 이동)")
+                    continue
+                print(f"  Z={target:.1f}mm 로 이동({args.jump_vel:.0f}mm/s)... "
+                    f"{'⚠ 아래로 크게 내려갑니다' if z - target > 20 else ''}")
+                set_velx(args.jump_vel, 30.0)      # 점프는 빠르게
+                set_accx(90.0, 90.0)
+                z = target
+                move_to(x0, y0, z, rx, ry, rz)
+                set_velx(15.0, 30.0)               # 점프 후엔 다시 느린 미세조정 속도로 복귀
+                set_accx(60.0, 60.0)
+            elif low == 'done':
+                surface_z = z
+            elif low == 'q':
+                print("  취소 → 안전 높이로 복귀")
+                move_to(x0, y0, z0, rx, ry, rz)
+                _shutdown(dsr_node)
+                return
+            else:
+                try:
+                    step = float(line)
+                    print(f"  step → {step:.2f}mm")
+                except ValueError:
+                    print("  ? 모르는 입력(Enter/숫자/z<값>/u/done/q)")
 
     # ── 3) 표면 Z 확정 ──────────────────────────────────────
     print(f"\n[4] 표면 Z = {surface_z:.2f} mm 로 확정.")
@@ -318,7 +341,10 @@ def draw_svg_at_surface(args, surface_z: float, home):
 
     work = WorkArea(width_mm=size, height_mm=size, margin_mm=5.0, center=True)
     mapper = CoordinateMapper(parsed.viewbox, work)
-    res_mm = 0.5
+    # 0.5→2.0mm: 구간이 짧으면(가속도 유한) 목표속도(draw_vel_mm_s)까지 도달을 못 해서
+    # 아무리 속도를 올려도 체감이 안 됐다 — v_peak≈sqrt(accel*구간길이) 라 구간을 늘려야
+    # 실제 도달속도가 오른다(대신 곡선이 살짝 덜 매끈해짐).
+    res_mm = 2.0
     max_seg = res_mm / mapper.scale if mapper.scale > 0 else res_mm
     paper_polys = mapper.map_strokes(sample_paths(parsed.strokes, max_seg))
     ordered = optimize(paper_polys, start=(0.0, 0.0))
@@ -339,16 +365,16 @@ def draw_svg_at_surface(args, surface_z: float, home):
         approach_height_mm=surface_z + 5.0,       # 시작점 위 접근
         travel_height_mm=surface_z + args.pen_up, # 획 사이 펜업(작게)
         tool_rx_deg=rx, tool_ry_deg=ry, tool_rz_deg=rz,   # 현재 자세 유지
-        # 힘제어: movel 로 되돌린 뒤 컴플라이언스가 실제로 반응하는 것 확인됨 → 8→16mm/s로 상향.
-        # 위치제어면 더 빠르게(37.62=31.35+20%). 요철에서 힘이 다시 튀면 --draw-vel 로 낮추기.
+        # 15.64→17.2mm/s(+10%), 가속도도 같이 +10%(59.5→65.45).
         draw_vel_mm_s=(args.draw_vel if args.draw_vel is not None
-                       else (16.0 if args.force else 37.62)),
+                       else (17.2 if args.force else 37.62)),
         draw_acc_mm_s2=(args.draw_acc if args.draw_acc is not None
-                        else (70.0 if args.force else 150.0)),
-        travel_vel_mm_s=60.0, travel_acc_mm_s2=300.0,
+                        else (65.45 if args.force else 150.0)),
+        # 획 사이 이동(펜업 상태) 60/300→51/255(-15%)로 같이 낮춤.
+        travel_vel_mm_s=51.0, travel_acc_mm_s2=255.0,
         # 각 점에서 완전정지("차큰차큰")하지 않도록 blend radius 부여 → 이어서 부드럽게 통과.
-        # 샘플 간격(0.5mm)보다 작아야 안전하므로 0.2mm. 더 부드럽게: 0.3, 형태 정확히: 0.1/0.
-        draw_blend_radius_mm=0.2,
+        # 샘플 간격(2.0mm)의 절반 미만이어야 안전(코너 잘림 방지)하므로 0.8mm.
+        draw_blend_radius_mm=0.8,
         # 힘제어: --force 면 설정 높이(surface_z)로 정확히 내려간 뒤 그 지점에서
         # 일정 힘으로 눌러 아크릴을 긁는다. XY 는 위치제어(형태 유지), Z 만 힘추종.
         use_force_control=args.force,

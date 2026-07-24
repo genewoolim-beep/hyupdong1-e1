@@ -19,6 +19,7 @@ dry_run=True 면 로봇을 움직이지 않고 계산/로그만 수행(빌드·�
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Tuple
 
@@ -56,6 +57,11 @@ class RobotConfig:
     stroke_mode: str = "movel"          # "movel" | "movesx"
     movesx_chunk: int = 50
     draw_blend_radius_mm: float = 0.0
+    # 획 사이 이동(상승→수평이동→접근→접촉)이 전부 radius=0 이라 각 구간마다 완전정지
+    # 했다가 재출발해서 "여러 번 뜨고 멈췄다 내려가는" 것처럼 보이던 문제 방지용 블렌드.
+    # 5.0→2.0: 수직→수평처럼 방향이 크게 꺾이는 코너에서 블렌드가 크면 실제 travel_height
+    # 보다 살짝 더 위로 부풀어 보일 수 있어(코너 블렌딩 특성) 줄임.
+    travel_blend_radius_mm: float = 2.0
 
     # 그리기 시작 전 이동할 안전 준비자세(joint, deg). None 이면 생략.
     # 전원 직후 로봇은 수직으로 쭉 뻗은 '특이점' 자세일 수 있는데, 특이점에서 출발하는
@@ -233,8 +239,10 @@ class RobotController:
         self._task_compliance_ctrl()                     # 컴플라이언스 ON
         self._set_stiffnessx(self.cfg.compliance_stiffness, time=0.0)
         fz = self.cfg.force_z_sign * force_n             # 부호로 누르는 방향 결정
+        # 램프업 시간(0.3초): draw_stroke() 의 _draw_body_movel(slow_first=True) 가 시작
+        # 몇 점을 절반 속도로 그어서 이 시간만큼을 대기 없이 자연스럽게 확보한다.
         self._set_desired_force([0.0, 0.0, fz, 0.0, 0.0, 0.0],
-                                [0, 0, 1, 0, 0, 0], time=0.5, mod=self._DR_FC_MOD_ABS)
+                                [0, 0, 1, 0, 0, 0], time=0.3, mod=self._DR_FC_MOD_ABS)
 
     def _disable_z_force(self):
         if self.cfg.dry_run:
@@ -250,9 +258,12 @@ class RobotController:
         sx, sy = poly[0]
 
         # 1) 시작점 위(travel) → 접근(approach)  : 펜업 속도(위치제어)
+        #    여기도 blend radius 를 줘서 travel→approach 사이에 완전정지 없이 흐르게 한다.
+        #    (전엔 travel_height 도착 후 멈췄다가 다시 approach_height 로 내려가며 또 멈췄음
+        #    → "멈추고 다시 내려가"로 보이던 원인)
         self._use_travel_speed()
-        self._movel_to(sx, sy, c.travel_height_mm)
-        self._movel_to(sx, sy, c.approach_height_mm)
+        self._movel_to(sx, sy, c.travel_height_mm, radius=c.travel_blend_radius_mm)
+        self._movel_to(sx, sy, c.approach_height_mm, radius=c.travel_blend_radius_mm)
 
         # 2) 획 본체
         self._use_draw_speed()
@@ -263,14 +274,23 @@ class RobotController:
             self._movel_to(sx, sy, c.draw_height_mm)
             # 2) 그 지점부터 Z 힘제어 ON — Z강성이 낮아(예:20) 위치 영향 최소, 힘이 지배해야 함
             self._enable_z_force(c.draw_force_n)
+            # [삭제] 예전엔 여기서 time.sleep(0.3) 으로 힘 램프업을 기다렸는데, 획이 많은
+            # 도안에서 순수 대기시간이 누적돼 너무 느려짐. 완전히 기다리지 않는 대신, 아래
+            # _draw_body_movel(slow_first=True) 가 시작 몇 점만 절반 속도로 그어서 "어차피
+            # 움직여야 하는 시간"을 램프업에 자연스럽게 써먹는다(순수 대기보다 훨씬 저렴).
             # 3) 본체는 point-by-point movel 로 긋는다.
             #    [되돌림] 한때 movesx(스플라인)로 바꿨었다 — per-point movel 의 가감속이 힘 추정에
             #    노이즈를 준다는 이유였는데, movesx 는 task_compliance_ctrl/set_desired_force 와
             #    상호작용하도록 검증된 명령이 아니라서(Doosan 컴플라이언스는 movel 계열 기준으로
             #    문서화됨) 오히려 "안 닿아도 안 내려간다"— 즉 힘제어 자체가 씹히는 훨씬 심각한
             #    문제가 생겼다(실기 확인됨). 노이즈보다 무반응이 더 나쁘므로 movel 로 되돌린다.
-            self._draw_body_movel(poly)
-            self._disable_z_force()
+            # try/finally: _draw_body_movel 중 예외가 나도 컴플라이언스를 반드시 끈다.
+            # (전엔 여기서 죽으면 힘제어가 로봇에 켜진 채로 남아, 다음 실행이 그 위에서
+            # 시작돼 갈수록 이상해지는/느려지는 문제가 있었다)
+            try:
+                self._draw_body_movel(poly, slow_first=True)
+            finally:
+                self._disable_z_force()
         else:
             # 순수 위치제어: draw_height 로 접촉 후 본체
             self._movel_to(sx, sy, c.draw_height_mm)
@@ -279,19 +299,33 @@ class RobotController:
             else:
                 self._draw_body_movel(poly)
 
-        # 3) 펜업(travel_height 상승) : 마지막 점 위로
+        # 3) 펜업(travel_height 상승) : 마지막 점 위로. blend radius 를 줘서 다음 획
+        #    시작부의 travel_height 수평이동과 완전정지 없이 이어지게 한다("두 번 뜨는" 현상 방지).
         lx, ly = poly[-1]
         self._use_travel_speed()
-        self._movel_to(lx, ly, c.travel_height_mm)
+        self._movel_to(lx, ly, c.travel_height_mm, radius=c.travel_blend_radius_mm)
 
     def _draw_body_movel(self, poly: Polyline, include_first: bool = False,
-                         z_override: Optional[float] = None):
+                         z_override: Optional[float] = None, slow_first: bool = False):
         # 두 모드 모두 draw_stroke 에서 첫 점을 draw_height 로 이미 접촉시켰으므로
         # 기본은 poly[1:] 만 긋는다. include_first=True 는 첫 점부터 다시 긋고 싶을 때만.
         # z_override 를 주면(힘제어) 그 Z 를 목표로 긋는다(표면보다 살짝 아래 → 힘이 4N 유지).
         r = self.cfg.draw_blend_radius_mm
         z = self.cfg.draw_height_mm if z_override is None else z_override
         pts = poly if include_first else poly[1:]
+
+        if slow_first and pts and not self.cfg.dry_run:
+            # 힘 램프업을 별도 대기 없이 "벌기" 위해, 시작 몇 점만 절반 속도로 긋는다.
+            # 샘플 간격이 0.5mm라 점 1개만으론 시간이 너무 적으니(대기 대체 효과 없음)
+            # 여러 점(N_SLOW_FIRST)을 묶어서 확보한다.
+            N_SLOW_FIRST = 6
+            slow_pts, pts = pts[:N_SLOW_FIRST], pts[N_SLOW_FIRST:]
+            self._set_velx(self.cfg.draw_vel_mm_s * 0.5, self.cfg.move_rot_vel_deg_s)
+            self._set_accx(self.cfg.draw_acc_mm_s2, self.cfg.move_rot_acc_deg_s2)
+            for (px, py) in slow_pts:
+                self._movel_to(px, py, z, radius=r)
+            self._use_draw_speed()   # 나머지는 정상 속도로 복귀
+
         for (px, py) in pts:
             self._movel_to(px, py, z, radius=r)
 

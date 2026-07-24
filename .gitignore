@@ -12,3 +12,8 @@ __pycache__/
 
 # 스크래치/미리보기 산출물
 *_preview.png
+
+# gui_bridge_server.py 실행 중 생기는 임시 job 파일/로그(커밋 불필요)
+scripts/.job_*.json
+scripts/.job_*.json.log
+samples/*.svg.log

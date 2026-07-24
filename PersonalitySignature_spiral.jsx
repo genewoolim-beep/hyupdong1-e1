@@ -713,6 +713,30 @@ const CUSTOM_GLYPHS = {
 //   MBTI 유형 → 기본 도형   창의성 → 대칭 차수 N · 퍼짐/조밀   몰입도 → 겹 수 · 나선 회전 규칙성
 //   사교성 → 크기   감수성 → 물결 변조
 const SPIKY_SIL = { crystal: 1, star12: 1, diamond: 1 };
+// ── 나선 "감김 리듬"(growth family) ──────────────────────────────────────
+// [2026-07-23] 지금까지는 겹마다 sc=ratio^k 한 가지(로그/황금나선 계열: 자기유사,
+// 중심으로 갈수록 겹이 촘촘해짐)만 썼다. 실제 나선에는 여러 갈래가 있다(참고: 아르키메데스
+// 나선=겹 간격이 항상 일정 · 로그/황금나선=자기유사 지수축소 · 페르마 나선=바깥은 성기고
+// 안쪽으로 갈수록 급격히 촘촘 · 로즈 변조=팽팽/느슨을 오가는 파동). 기질군(NT/NF/ST/SF)마다
+// 다른 감김 리듬을 배정해 "같은 실루엣이어도 감기는 느낌 자체가 다르게" 만든다.
+function temperamentOf(type) {
+  const isN = type[1] === "N", isT = type[2] === "T";
+  return isN ? (isT ? "NT" : "NF") : (isT ? "ST" : "SF");
+}
+const GROWTH_FAMILY = { NT: "fermat", NF: "log", ST: "archimedean", SF: "osc" };
+// endScale = 겹수만큼 지났을 때 도달하는 최종 축소율(로그나선 기준과 동일한 종착점).
+// 다른 감김 리듬도 이 종착점은 같게 맞추고 "거기 도달하는 곡선 모양"만 다르게 한다 —
+// 그래야 도전성/창의성이 결정하는 "얼마나 퍼지는지"는 리듬과 무관하게 일관되게 유지된다.
+function growthScale(family, k, layers, ratio) {
+  const t = layers > 1 ? k / (layers - 1) : 0;
+  const endScale = Math.pow(ratio, layers - 1);
+  let sc;
+  if (family === "archimedean") sc = 1 + (endScale - 1) * t;               // 선형(일정 간격)
+  else if (family === "fermat") sc = 1 + (endScale - 1) * Math.pow(t, 1.8); // 바깥 성기고 안쪽 촘촘
+  else if (family === "osc") sc = Math.pow(ratio, k) * (1 + 0.18 * Math.cos(3.5 * Math.PI * t)); // 파동(나이테)
+  else sc = Math.pow(ratio, k);                                            // log(기본, 자기유사)
+  return Math.max(0.04, sc);
+}
 // 유형별 "결" — FAMILY 테이블에서 여러 유형이 같은 실루엣을 공유한다(예: INFJ·ENFJ·ENFP 는
 // 전부 blossom, ISFJ·ESFP 는 전부 wave, INTJ·ENTP 는 crystal, INTP·ISTJ 는 hexagon).
 // 나선 알고리즘은 실루엣에 크게 좌우되기 때문에 그대로 두면 이 유형들이 서로 거의 똑같아
@@ -771,9 +795,10 @@ function generateGlyph(type, V, seed, complexity = 0.7) {
     const x = Math.cos(th) * rho, y = Math.sin(th) * rho * flavor.squeeze;
     return [Math.atan2(y, x), Math.hypot(x, y)];
   }) };
+  const growth = GROWTH_FAMILY[temperamentOf(type)];
   const strokes = [];
   for (let k = 0; k < layers; k++) {
-    const sc = Math.pow(ratio, k), rot = rot0 + k * dTheta;
+    const sc = growthScale(growth, k, layers, ratio), rot = rot0 + k * dTheta;
     const pts = shape.polar.map(([th, rho]) => {
       const rr = rho * sc * (1 + wave * Math.cos(N * (th + Math.PI / 2)));
       return [cx + Math.cos(th + rot) * rr, cy + Math.sin(th + rot) * rr];
@@ -902,6 +927,7 @@ export default function PersonalitySignature() {
   const [answers, setAnswers] = useState(Array(QUESTIONS.length).fill(null));
   const [qi, setQi] = useState(0);
   const [complexity, setComplexity] = useState(0.7); // 문양 복잡도(화려함 ↔ 그리는 시간)
+  const [robotJob, setRobotJob] = useState(null); // { id, state, log_tail } | null — 로봇 드로잉 진행상태
 
   const result = useMemo(() => {
     if (answers.some((a) => a === null)) return null;
@@ -930,6 +956,90 @@ export default function PersonalitySignature() {
   };
   const restart = () => { setAnswers(Array(QUESTIONS.length).fill(null)); setQi(0); setScreen("intro"); };
 
+  // 로봇으로 그리기: 로컬 브릿지 서버(gui_bridge_server.py, 기본 :8787)에
+  // pen_up → 아크릴 드로잉 → pen_down → brush → grab 시퀀스 실행을 요청한다.
+  // 브릿지 서버가 안 떠있으면 fetch 자체가 실패하므로 그 경우를 안내 메시지로 구분.
+  const ROBOT_BRIDGE_URL = "http://localhost:8787";
+  const sendDrawRequest = async (endpoint, bodyJson) => {
+    setRobotJob({ id: null, state: "starting", log_tail: "" });
+    try {
+      const res = await fetch(`${ROBOT_BRIDGE_URL}${endpoint}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: bodyJson,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        setRobotJob({ id: null, state: "error", log_tail: err.error || `HTTP ${res.status}` });
+        return;
+      }
+      const { job_id } = await res.json();
+      setRobotJob({ id: job_id, state: "queued", log_tail: "" });
+      const poll = async () => {
+        try {
+          const r = await fetch(`${ROBOT_BRIDGE_URL}/status?job=${job_id}`);
+          const j = await r.json();
+          setRobotJob({ id: job_id, state: j.state, log_tail: j.log_tail || "" });
+          if (j.state === "queued" || j.state === "running") setTimeout(poll, 2000);
+        } catch (e) {
+          setRobotJob({ id: job_id, state: "error", log_tail: String(e) });
+        }
+      };
+      setTimeout(poll, 1000);
+    } catch (e) {
+      setRobotJob({
+        id: null, state: "error",
+        log_tail: `브릿지 서버 연결 실패: ${e}. gui_bridge_server.py 가 켜져 있는지 확인하세요.`,
+      });
+    }
+  };
+  const drawOnRobot = () =>
+    sendDrawRequest("/draw-signature",
+      toRobotJSON(strokes, { type: result.type, vector: result.vector, axes: result.axes }));
+
+  // 샘플 그리기(테스트용): 설문 없이 samples/ 의 기존 SVG를 서버에서 바로 그린다
+  // (브릿지 서버가 파일을 변환 없이 그대로 사용 — square.svg, hex_spiral.svg).
+  const drawSample = (name) =>
+    sendDrawRequest("/draw-sample", JSON.stringify({ sample: name }));
+
+  const robotBusy = robotJob && ["starting", "queued", "running"].includes(robotJob.state);
+
+  // 긴급 중지: 로봇에 정지 명령부터 보내고, 진행 중이던 시퀀스 프로세스도 종료한다.
+  // 상태를 알 수 없어도(robotJob이 null이어도) 언제든 누를 수 있게 항상 활성화.
+  const [estopBusy, setEstopBusy] = useState(false);
+  const estopRobot = async () => {
+    setEstopBusy(true);
+    try {
+      const res = await fetch(`${ROBOT_BRIDGE_URL}/estop`, { method: "POST" });
+      const j = await res.json();
+      setRobotJob({
+        id: robotJob?.id ?? null, state: "stopped",
+        log_tail: j.stop_message || (j.stop_sent ? "정지 명령 전송됨" : "정지 명령 실패"),
+      });
+    } catch (e) {
+      setRobotJob({ id: null, state: "error", log_tail: `긴급중지 요청 실패: ${e}` });
+    } finally {
+      setEstopBusy(false);
+    }
+  };
+
+  // 원위치: 준비자세(0,0,90,0,90,0)로 복귀. 다른 작업이 실행 중이면 서버가 거절한다.
+  const [homeBusy, setHomeBusy] = useState(false);
+  const [homeMsg, setHomeMsg] = useState(null);
+  const goHomeRobot = async () => {
+    setHomeBusy(true);
+    setHomeMsg(null);
+    try {
+      const res = await fetch(`${ROBOT_BRIDGE_URL}/go-home`, { method: "POST" });
+      const j = await res.json();
+      setHomeMsg(j.ok ? "원위치 완료" : `원위치 실패: ${j.message}`);
+    } catch (e) {
+      setHomeMsg(`원위치 요청 실패: ${e}`);
+    } finally {
+      setHomeBusy(false);
+    }
+  };
+
   return (
     <div className="ps-root">
       <style>{CSS}</style>
@@ -949,6 +1059,55 @@ export default function PersonalitySignature() {
             <button className="ps-btn ps-primary" onClick={() => { restartState(); setScreen("quiz"); }}>
               시작하기
             </button>
+
+            {/* 테스트용: 설문 없이 기존 샘플 SVG로 로봇 파이프라인만 빠르게 확인 */}
+            <div style={{ marginTop: 28, paddingTop: 22, borderTop: "1px solid var(--line)" }}>
+              {/* 로봇 안전 제어 — 테스트 중 언제든(작업 상태 무관) 누를 수 있게 항상 활성화 */}
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "center", marginBottom: 14 }}>
+                <button
+                  onClick={estopRobot}
+                  disabled={estopBusy}
+                  style={{
+                    border: "1px solid #c94b3a", background: estopBusy ? "#7a2e24" : "#c94b3a",
+                    color: "#fff", padding: "12px 22px", borderRadius: 2, fontSize: 14,
+                    fontWeight: 700, cursor: estopBusy ? "default" : "pointer", letterSpacing: ".04em",
+                    fontFamily: "inherit",
+                  }}
+                >
+                  {estopBusy ? "정지 명령 전송 중…" : "⏹ 긴급 중지"}
+                </button>
+                <button className="ps-btn" onClick={goHomeRobot} disabled={homeBusy}>
+                  {homeBusy ? "원위치 이동 중…" : "원위치"}
+                </button>
+              </div>
+              {homeMsg && (
+                <p className="ps-muted" style={{ textAlign: "center", fontSize: 12, marginBottom: 10 }}>
+                  {homeMsg}
+                </p>
+              )}
+
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "center" }}>
+                <button className="ps-btn" onClick={() => drawSample("square")} disabled={robotBusy}>
+                  {robotBusy ? "로봇 작업 중…" : "샘플: 사각형"}
+                </button>
+                <button className="ps-btn" onClick={() => drawSample("hex_spiral")} disabled={robotBusy}>
+                  {robotBusy ? "로봇 작업 중…" : "샘플: hex_spiral"}
+                </button>
+              </div>
+              <p className="ps-muted" style={{ fontSize: 11, marginTop: 8 }}>
+                samples/의 기존 SVG로 pen_up→그리기→pen_down→brush→grab 전체를 바로 테스트합니다
+              </p>
+              {robotJob && (
+                <p className="ps-muted" style={{ fontSize: 12, marginTop: 6 }}>
+                  {robotJob.state === "starting" && "브릿지 서버에 연결하는 중…"}
+                  {robotJob.state === "queued" && "대기열에 등록됨…"}
+                  {robotJob.state === "running" && "pen_up → 드로잉 → pen_down → brush → grab 진행 중…"}
+                  {robotJob.state === "done" && "완료! 확인해 보세요."}
+                  {robotJob.state === "error" && `실패: ${robotJob.log_tail || "알 수 없는 오류"}`}
+                  {robotJob.state === "stopped" && `긴급중지됨: ${robotJob.log_tail || ""}`}
+                </p>
+              )}
+            </div>
           </div>
         )}
 
@@ -1052,9 +1211,36 @@ export default function PersonalitySignature() {
               </p>
             </div>
 
+            {/* 로봇 안전 제어 — 언제든(작업 상태 무관) 누를 수 있게 항상 활성화 */}
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "center", marginBottom: 10 }}>
+              <button
+                onClick={estopRobot}
+                disabled={estopBusy}
+                style={{
+                  border: "1px solid #c94b3a", background: estopBusy ? "#7a2e24" : "#c94b3a",
+                  color: "#fff", padding: "12px 22px", borderRadius: 2, fontSize: 14,
+                  fontWeight: 700, cursor: estopBusy ? "default" : "pointer", letterSpacing: ".04em",
+                  fontFamily: "inherit",
+                }}
+              >
+                {estopBusy ? "정지 명령 전송 중…" : "⏹ 긴급 중지"}
+              </button>
+              <button className="ps-btn" onClick={goHomeRobot} disabled={homeBusy}>
+                {homeBusy ? "원위치 이동 중…" : "원위치"}
+              </button>
+            </div>
+            {homeMsg && (
+              <p className="ps-muted" style={{ textAlign: "center", fontSize: 12, marginBottom: 10 }}>
+                {homeMsg}
+              </p>
+            )}
+
             {/* 내보내기 */}
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "center" }}>
-              <button className="ps-btn ps-primary" onClick={() => download(`signature_${result.type}.svg`, toSVG(strokes, { type: result.type }), "image/svg+xml")}>
+              <button className="ps-btn ps-primary" onClick={drawOnRobot} disabled={robotBusy}>
+                {robotBusy ? "로봇 작업 중…" : "로봇으로 그리기"}
+              </button>
+              <button className="ps-btn" onClick={() => download(`signature_${result.type}.svg`, toSVG(strokes, { type: result.type }), "image/svg+xml")}>
                 SVG 내려받기
               </button>
               <button className="ps-btn" onClick={() => download(`signature_${result.type}.json`, toRobotJSON(strokes, { type: result.type, vector: result.vector, axes: result.axes }), "application/json")}>
@@ -1062,6 +1248,16 @@ export default function PersonalitySignature() {
               </button>
               <button className="ps-btn" onClick={restart}>다시 하기</button>
             </div>
+            {robotJob && (
+              <p className="ps-muted" style={{ textAlign: "center", fontSize: 12, marginTop: 14 }}>
+                {robotJob.state === "starting" && "브릿지 서버에 연결하는 중…"}
+                {robotJob.state === "queued" && "대기열에 등록됨…"}
+                {robotJob.state === "running" && "pen_up → 드로잉 → pen_down → brush → grab 진행 중…"}
+                {robotJob.state === "done" && "완료! 완성된 아크릴판을 확인하세요."}
+                {robotJob.state === "error" && `실패: ${robotJob.log_tail || "알 수 없는 오류"}`}
+                {robotJob.state === "stopped" && `긴급중지됨: ${robotJob.log_tail || ""}`}
+              </p>
+            )}
             <p className="ps-muted" style={{ textAlign: "center", fontSize: 11, marginTop: 20 }}>
               폴리라인 {strokes.length}획 · 로봇 JSON은 획 순서 그대로 펜다운/펜업 경로가 됩니다
             </p>

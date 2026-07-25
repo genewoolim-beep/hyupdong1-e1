@@ -33,10 +33,54 @@ svg_drawing/                    # ament_python : 노드 + 모듈
     drawing_server.py           # ROS2 서비스 서버(전체 파이프라인)
   config/drawing_params.yaml    # Z높이/TCP/용지/속도/샘플간격 등 전 파라미터
   launch/drawing.launch.py
+scripts/                        # 독립 실행 스크립트(빌드 불필요, 바로 python3 실행)
+  lower_to_paper.py             #   키보드로 표면 잡고 위치제어로 SVG 그리기(가장 많이 씀)
+  drl_motions.py                #   pen_up/pen_down/brush/grab 픽앤플레이스 모션 정의
+  run_drl_motion.py             #   drl_motions.py 단일 모션 CLI 실행기(--speed-scale 등)
+  run_signature_sequence.py     #   pen_up→그리기→pen_down→brush→grab 전체 시퀀스 오케스트레이터
+  gui_bridge_server.py          #   브라우저 GUI ↔ 로봇 제어 로컬 HTTP 브릿지(포트 8787)
+  emergency_stop.py             #   motion/move_stop 서비스 직접 호출(긴급정지)
+  go_home.py                    #   준비자세 복귀
+  force_monitor.py / velocity_monitor.py  # 힘/속도 실측 모니터링(디버그용)
+samples/                        # 테스트용 SVG(square, hex_spiral 등)
+PersonalitySignature_spiral.jsx # MBTI→문양 생성기 React 소스(GUI 원본, 로봇 연동 버튼 포함)
+personality_signature.html      # 위 jsx를 CDN React+Babel로 즉시 실행하는 정적 페이지(빌드 불필요)
 ```
 
 > 서비스(.srv)는 순수 `ament_python` 에서 생성이 안 되므로, 표준 방식대로
 > 별도 `ament_cmake` 인터페이스 패키지(`svg_drawing_interfaces`)로 분리했습니다.
+>
+> `scripts/` 아래 파일들은 `svg_drawing` 패키지 밖의 독립 스크립트라 **colcon 빌드가 필요 없습니다**
+> (수정 후 바로 `python3 scripts/파일명.py` 로 실행). 빌드가 필요한 건 `svg_drawing/` 패키지
+> 내부(`svg_parser.py` 등 서비스가 import 하는 모듈)를 고쳤을 때뿐입니다.
+
+## 다른 컴퓨터(노트북)에서 설치하기
+
+이 저장소를 새 컴퓨터에서 그대로 쓰려면:
+
+```bash
+# 1) ROS2 Humble 설치 + Doosan M0609 드라이버(dsr_bringup2, dsr_msgs2 등)는 별도로 이미
+#    설치되어 있어야 함(이 저장소는 그 위에 얹는 응용 패키지). 로봇 제조사 워크스페이스 설정을 먼저 마칠 것.
+
+# 2) 이 저장소를 콜콘 워크스페이스의 src/ 에 클론
+cd ~/ws_cobot_pjt/ws_dsr/src
+git clone <이 저장소 URL> svg_drawing
+
+# 3) 파이썬 의존성
+pip install svgelements numpy
+
+# 4) 빌드
+cd ~/ws_cobot_pjt/ws_dsr
+colcon build --packages-select svg_drawing_interfaces svg_drawing
+source install/setup.bash
+```
+
+브라우저 GUI(`personality_signature.html`)는 별도 설치 없이 **파일 하나로 바로 실행**됩니다
+(React/Babel을 CDN에서 불러오므로 최초 실행 시 인터넷 연결만 있으면 됨, Node.js/npm 불필요).
+
+> **실제로 GUI를 켜고 로봇을 움직이는 손에 잡히는 절차(터미널 명령·버튼 순서·안전 수칙)는
+> [사용설명서.md](사용설명서.md) 의 "GUI로 로봇 구동하기" 절을 그대로 따라 하세요.**
+> 이 README 는 코드 구조 설명이 목적이고, 실행 순서의 최종 기준은 사용설명서입니다.
 
 ## 의존성 설치
 
@@ -121,6 +165,49 @@ ros2 service call /dsr01/touch_off svg_drawing_interfaces/srv/TouchOff "{x_mm: 7
 # 4) dry_run 없이 저속으로 첫 드로잉
 ros2 service call /dsr01/draw_svg svg_drawing_interfaces/srv/DrawSvg "{svg_path: '/…/mandala.svg'}"
 ```
+
+## GUI + 로봇 자동 시퀀스 (scripts/, PersonalitySignature 연동)
+
+`drawing.launch.py`(서비스 방식)와는 별개로, MBTI 문양 생성 GUI에서 바로 로봇을
+움직이는 **두 번째 실행 경로**가 `scripts/` 아래에 있습니다. 조작 절차는
+[사용설명서.md](사용설명서.md)를 보고, 여기서는 구조만 설명합니다.
+
+```
+브라우저(personality_signature.html, React)
+   │  fetch("http://127.0.0.1:8787/...")
+   ▼
+scripts/gui_bridge_server.py   (표준 라이브러리 http.server만 사용, 외부 의존성 0)
+   │  subprocess.Popen(..., start_new_session=True)   ← 자식까지 한 프로세스 그룹으로 묶음
+   ▼
+scripts/run_signature_sequence.py   (오케스트레이터)
+   │  각 단계를 독립 서브프로세스로 순차 호출, 하나라도 실패하면 즉시 중단
+   ├─ run_drl_motion.py --motion pen_up     (drl_motions.py)
+   ├─ lower_to_paper.py --svg <문양 SVG>     (아크릴에 실제로 그리기)
+   ├─ run_drl_motion.py --motion pen_down
+   ├─ run_drl_motion.py --motion brush
+   └─ run_drl_motion.py --motion grab       (완성 아크릴판 집어서 전달)
+```
+
+**gui_bridge_server.py 엔드포인트**
+
+| 메서드/경로 | 역할 |
+|---|---|
+| `POST /draw-signature` | body = GUI의 로봇용 폴리라인 JSON(`toRobotJSON()` 출력) → 전체 시퀀스 실행, `{job_id}` 반환 |
+| `POST /draw-sample` | body = `{"sample":"square"\|"hex_spiral"}` → `samples/`의 기존 SVG를 변환 없이 그대로 그림(빠른 테스트용) |
+| `GET /status?job=<id>` | `{state: queued\|running\|done\|error\|stopped, log_tail}` — GUI가 폴링 |
+| `POST /estop` | `emergency_stop.py`로 즉시 정지 명령 전송 + 실행 중 시퀀스 프로세스 그룹 강제 종료 |
+| `POST /go-home` | `go_home.py`로 준비자세 복귀(다른 작업 실행 중이면 409로 거절) |
+| `GET /health` | 헬스체크 |
+
+로컬(127.0.0.1) 전용이며 CORS는 전체 허용(로컬 파일/포트에서 브라우저가 바로 fetch 가능하게).
+**실제 로봇을 움직이므로 외부 네트워크에 절대 노출하지 마세요.**
+
+**속도/안전 파라미터**: `run_signature_sequence.py`/`gui_bridge_server.py`의
+`pen-up-speed`/`pen-down-speed`/`brush-speed`/`grab-speed`(모두 1.0=DRL 펜던트 원속도 기준
+배율)와 `plate-size-mm`(아크릴판 한 변, 실제 판보다 크면 안 됨)는 실기에서 검증된 안전값이
+기본값으로 들어 있습니다. 컨트롤러를 재기동했거나 새 로봇/새 컴퓨터에서 처음 쓸 때는
+반드시 낮은 배율로 먼저 검증하세요(컨트롤러 재기동 후 배율이 그대로 적용돼 위험하게
+빨라진 사례가 있었음 — 자세한 경위는 git log 참고).
 
 ## 각 모듈 단독 테스트
 

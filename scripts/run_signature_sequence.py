@@ -64,9 +64,9 @@ def parse_args():
                     help='이미 있는 SVG 파일을 그대로 그리기(변환 없음, transform 있는 '
                          'SVG도 SvgParser 가 처리). samples/hex_spiral.svg 같은 샘플 '
                          '테스트용. --strokes-json 와 둘 중 하나만')
-    ap.add_argument('--plate-size-mm', type=float, default=90.0,
-                    help='아크릴판 한 변(mm). 기본 90(GUI 주석의 "명함 90mm" 기준). '
-                         '실제 판 크기에 맞춰 조정하세요')
+    ap.add_argument('--plate-size-mm', type=float, default=112.5,
+                    help='아크릴판 한 변(mm). 기본 112.5(90에서 +25%). '
+                         '실제 판 크기보다 크면 판 밖으로 그릴 수 있으니 꼭 확인하세요')
     ap.add_argument('--robot-id', default='dsr01')
     ap.add_argument('--model', default='m0609')
     # ── 안전 리셋(중요) ──────────────────────────────────────────────────

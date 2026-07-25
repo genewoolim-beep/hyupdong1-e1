@@ -141,37 +141,33 @@ function circlePtsWavy(cx, cy, r, N, amp, n = 160) {
 
 
 /* ────────────────────────────────────────────────────────────
-   4. MBTI 16종 → 문양 레시피
-   각 유형은 두 부분으로 구성된다.
-     silhouette : 문양 전체의 "외곽 형태"(하트·방패·꽃·별·잎·육각 등).
-                  → 이 형태를 극좌표로 샘플해 중첩 윤곽·물결 기요셰를 그 위에 얹으므로
-                    유형마다 실제로 다른 실루엣이 나온다(하트는 하트, 방패는 방패).
-     recipe     : 중앙 메달리온에 쌓을 "내부 장식링" 목록(원형 장식).
-   silhouette 종류: heart · shield · leaf · hexagon · diamond · gear · wave
-                   · blossom(꽃) · bud(홑꽃) · crystal(결정별) · star12(잔별) · circle
-   내부링 종류: harm · spiro · petal · star · scallop · bead · spoke · rose · circle
+   4. MBTI 16종 → 모티프 매칭
+   각 유형은 label(결과화면 표시명)과 motif(6절 문양 생성기의 빌더 키)로 구성.
+   I 8종은 나선 계열(SPIRAL_SIL 로 makeShape 실루엣 매핑), E 8종은 기하 계열
+   (geoGlyph 안의 모티프별 빌더). 상세 상징 근거는 6절 주석 참고.
 ──────────────────────────────────────────────────────────── */
+// [2026-07-25 재설계] I=나선(내향: 안으로 감기는 여정) / E=기하(외향: 중심에서 뻗는 구조).
+// motif 는 generateGlyph 의 모티프 빌더 키. 신성기하학 상징(메르카바·얀트라·베시카·
+// Seed/Flower of Life·토러스 등)의 "구성 원리"만 차용해 자체 알고리즘으로 생성한다.
 const FAMILY = {
-  // NT — 결정/별 (예리·기하)
-  INTJ: { label: "결정 성좌", silhouette: "crystal", recipe: ["star", "spiro", "bead"] },
-  INTP: { label: "격자 결정", silhouette: "hexagon", recipe: ["star", "spoke", "bead"] },
-  ENTJ: { label: "성휘(별빛)", silhouette: "star12", recipe: ["spiro", "star", "bead"] },
-  ENTP: { label: "분기 결정", silhouette: "crystal", recipe: ["spiro", "rose", "scallop"] },
-  // NF — 꽃/만다라 (유기·곡선)
-  INFJ: { label: "나선 꽃", silhouette: "blossom", recipe: ["spiro", "petal", "scallop"] },
-  INFP: { label: "홑꽃", silhouette: "bud", recipe: ["petal", "rose", "bead"] },
-  ENFJ: { label: "겹꽃 만다라", silhouette: "blossom", recipe: ["petal", "scallop", "rose"] },
-  ENFP: { label: "유기 만다라", silhouette: "blossom", recipe: ["rose", "petal", "spiro"] },
-  // ST — 기하/구조 (건축적)
-  ISTJ: { label: "육각 격자", silhouette: "hexagon", recipe: ["star", "spoke", "bead"] },
-  ISTP: { label: "톱니 세공", silhouette: "gear", recipe: ["star", "spoke", "scallop"] },
-  ESTJ: { label: "각진 방패", silhouette: "shield", recipe: ["star", "spoke", "bead"] },
-  ESTP: { label: "화살 방사", silhouette: "diamond", recipe: ["spoke", "star", "bead"] },
-  // SF — 물결/잎 (부드러움)
-  ISFJ: { label: "물결 고리", silhouette: "wave", recipe: ["scallop", "rose", "bead"] },
-  ISFP: { label: "잎사귀", silhouette: "leaf", recipe: ["rose", "petal", "bead"] },
-  ESFJ: { label: "하트 로제트", silhouette: "heart", recipe: ["petal", "rose", "bead"] },
-  ESFP: { label: "파동 별", silhouette: "wave", recipe: ["spiro", "scallop", "bead"] },
+  // I — 나선 8종 (회전+축소, 감김리듬은 기질군 RHYTHM 승계)
+  INTJ: { label: "결정 나선", motif: "crystalFermat" },
+  INTP: { label: "격자 나선", motif: "latticeLog" },
+  INFJ: { label: "황금 꽃나선", motif: "blossomGolden" },
+  INFP: { label: "흩날린 꽃잎", motif: "petalDrift" },
+  ISTJ: { label: "나이테 코일", motif: "ringCoil" },
+  ISFJ: { label: "조가비 나선", motif: "shellGuard" },
+  ISTP: { label: "톱니 나선", motif: "gearSegment" },
+  ISFP: { label: "잎맥 물결", motif: "leafCurrent" },
+  // E — 기하 8종 (무회전 윤곽 중첩 + 구조선)
+  ENTJ: { label: "메르카바", motif: "merkabaCommand" },
+  ENTP: { label: "스파크 격자", motif: "sparkLattice" },
+  ESTJ: { label: "공리 격자", motif: "axiomGrid" },
+  ESTP: { label: "얀트라 추진", motif: "yantraDrive" },
+  ENFJ: { label: "베시카 방사", motif: "radiantVesica" },
+  ENFP: { label: "씨앗 만개", motif: "seedBurst" },
+  ESFJ: { label: "생명의 꽃", motif: "flowerCommons" },
+  ESFP: { label: "토러스 무대", motif: "torusStage" },
 };
 
 /* ────────────────────────────────────────────────────────────
@@ -523,289 +519,270 @@ function shapeRipple(shape, cx, cy, s, N, amp, off) {
 }
 
 /* ────────────────────────────────────────────────────────────
-   5-c. 커스텀(수작업 기초 이미지 기반) 문양
-   사용자가 유형별로 제공하는 기초 SVG를 절차적 파라미터로 재구성한 것.
-   CUSTOM_GLYPHS[type]가 있으면 generateGlyph()가 기본 실루엣 파이프라인 대신 이걸 사용한다.
-   같은 개인화 파라미터(N·outerR·sharp·curv·off)로 계속 튜닝된다는 점은 동일하다.
+   6. 문양 생성기 — I=나선 / E=기하 (2026-07-25 재설계)
+   3층 구조:
+     [1층] I/E         → 계열 분기: I=회전+축소 나선(안으로 감기는 여정) /
+                         E=무회전 윤곽 중첩+구조선(중심에서 밖으로 뻗음)
+     [2층] N·S/T·F/J·P → 유형 고정 스타일(라운딩·구조선·지터·열린획) + 기질군 감김리듬
+     [3층] 성향벡터 4종 → 같은 유형 안의 개인차(연속값: N·겹수·크기·물결)
+   신성기하학 상징(메르카바·스리얀트라·베시카·Seed/Flower of Life·토러스)은
+   "구성 원리"만 차용해 자체 알고리즘으로 생성(형태 복제 아님).
+   로봇 제약: 모든 획=긴 폴리라인(점찍기 금지) · 총 획수 ≤ ~25 ·
+             MIN_RATIO floor 로 중심부 급곡률 방지(한 점으로 수렴 금지).
 ──────────────────────────────────────────────────────────── */
-// INTJ "결정 성좌" 기초 이미지(로봇팔용 v2 SVG, viewBox -250~250 기준 반지름 비율을 그대로 사용):
-//   외곽 원 220 · 중간 원 175 · 내곽 안내원 110 · 중심 컴퍼스 별 2겹(끝 110/70, 골/끝 비율 ≈0.32)
-//   · 안내원에 내접하는 N각형 격자 + 대각선 · 8방향 크리스탈 패싯(밑 135~끝 195)
-//   · 안내원·중간원 위에 정확히 놓이는 구슬 2겹 · 마디에서 옆으로 휘어드는 곡선 연결(성좌 아크)
-function crystalConstellationGlyph({ cx, cy, N, outerR, sharp, curv, wobble, focusN }) {
-  const strokes = [];
-  const rOuter = outerR;
-  const rMid = outerR * 0.795;       // 175/220
-  const rGuide = outerR * 0.5;       // 110/220
-  const facetBase = outerR * 0.614;  // 135/220
-  const facetTip = outerR * 0.886;   // 195/220
-
-  // N(6~14, 창의성 기준)을 그대로 쓰면 창의성 기본값(50)이 패싯 10개가 되어 원본(8개)과
-  // 어긋난다. -2 보정해서 창의성 50일 때 정확히 원본과 같은 8개가 나오게 맞춘다.
-  const facetN = Math.max(4, N - 2);
-  const arms = Math.max(3, Math.round(facetN / 2));
-
-  // 감수성 → 성좌 연결 아크가 얼마나 부풀려 휘는지(0=거의 직선인 목걸이 고리, 1=크게 휘는 곡선).
-  const arcBow = map(curv, 0, 1, 0, 1);
-  // 구슬(마디) 크기는 원본 비율(0.0227)로 고정 — 커질수록 뭉쳐 보이는 문제가 있어 크기를
-  // 튜닝 대상에서 뺐다. 대신 집중력은 마디 위의 작은 십자 눈금(조준선) 길이로 표현한다.
-  const beadR = outerR * 0.0227;
-  const tickLen = outerR * map(focusN, 0, 1, 0, 0.045);
-
-  // 좌우대칭을 깨는 회전(스월)은 쓰지 않는다 — 항상 원본과 같은 정렬을 유지.
-  const off = 0;
-
-  // 외곽~중간~내곽 안내원(원본의 3겹 원). 계획성이 낮으면(wobble>0) 대칭적으로 살짝 굴곡진다.
-  strokes.push(circlePtsWavy(cx, cy, rOuter, facetN, wobble));
-  strokes.push(circlePtsWavy(cx, cy, rMid, facetN, wobble));
-  strokes.push(circlePtsWavy(cx, cy, rGuide, facetN, wobble));
-
-  // 중심 컴퍼스 별 2겹(큰 별 + 63.6% 축소된 별, 원본과 동일 비율)
-  strokes.push(...bBurst(cx, cy, rGuide, arms, sharp, off));
-  strokes.push(...bBurst(cx, cy, rGuide * 0.636, arms, sharp, off));
-
-  // 안내원에 내접하는 격자(N각형 + 대각선) — 중심부의 "짜임" 표현
-  strokes.push(...bLattice(cx, cy, rGuide, facetN, off));
-
-  // 크리스탈 패싯 facetN개(항상 직선 다이아몬드) + 안내원~중간원 사이 연결 스포크
-  strokes.push(...bFacet(cx, cy, facetBase, facetTip, facetN, sharp, off));
-  strokes.push(...bSpoke(cx, cy, rGuide, rMid, facetN, off));
-
-  // 안내원·중간원 위에 정확히 놓이는 구슬 2겹(크기 고정) + 집중력 → 십자 눈금 길이
-  strokes.push(...bBead(cx, cy, rGuide, facetN, beadR));
-  strokes.push(...bBead(cx, cy, rMid, facetN, beadR));
-  strokes.push(...bTick(cx, cy, rGuide, facetN, off, tickLen));
-  strokes.push(...bTick(cx, cy, rMid, facetN, off, tickLen));
-
-  // 중간원 마디끼리 잇는 성좌 연결 곡선(감수성 → 곡선의 부풀림 정도). 시작·끝을 같은 반지름
-  // (rMid)에 둬야 좌우대칭이 유지된다 — 반지름이 다르면 회전 방향이 고정된 "팔랑개비"가 되어
-  // 좌우가 어긋난다(원본 기초 이미지도 사실 이 부분은 회전대칭일 뿐 좌우대칭은 아니었다).
-  strokes.push(...bArcLink(cx, cy, rMid, rMid, facetN, off, arcBow));
-
-  return strokes;
-}
-
-// INTP "격자 결정" 기초 이미지(원본 SVG, viewBox -200~200 기준 반지름 비율을 그대로 사용):
-//   외곽 원 180 · 중간 원 135 · 내곽 안내원 90 · 중심 육각 격자 2겹(60/95, 큰 쪽에만 대각선 3개)
-//   · 6방향 크리스탈 패싯(밑 135~끝 165) · 패싯 밑동(중간원)의 구슬 + 큰 육각형~구슬 연결 스텁
-//   · 중간원에 내접하는 육각 고리(대각선 없음)
-// 원본에 없는 두 가지를 더해 조금 더 짜임새 있게 확장했다(둘 다 기존 요소를 그대로 재사용):
-//   · 큰 육각형 꼭짓점 위에도 작은 구슬을 더해 이중 구슬 레이어(INTJ와 같은 언어)
-//   · 인접한 패싯 마디를 잇는 격자 연결 곡선(감수성 → 부풀림 정도, INTJ의 성좌 아크와 동일한 원리)
-function latticeCrystalGlyph({ cx, cy, N, outerR, sharp, curv, wobble, focusN }) {
-  const strokes = [];
-  const rOuter = outerR;
-  const rMid = outerR * 0.75;         // 135/180
-  const rGuide = outerR * 0.5;        // 90/180
-  const hexSmall = outerR * 0.333;    // 60/180
-  const hexLarge = outerR * 0.528;    // 95/180
-  const facetTip = outerR * 0.9167;   // 165/180
-
-  // N(6~14, 창의성 기준)을 그대로 쓰면 창의성 기본값(50)이 10각형이 되어 원본(육각형)과
-  // 어긋난다. -4 보정해서 창의성 50일 때 정확히 육각형이 되게 맞춘다.
-  const facetN = Math.max(4, N - 4);
-
-  // 좌우대칭을 깨는 회전(스월)은 쓰지 않는다 — 항상 원본과 같은 정렬을 유지.
-  const off = 0;
-
-  // 구슬 크기는 원본 비율(0.0227)로 고정(INTJ와 동일한 이유 — 커질수록 뭉쳐 보임 방지).
-  // 집중력은 마디 위의 작은 십자 눈금(조준선) 길이로 표현한다.
-  const beadR = outerR * 0.0227;
-  const tickLen = outerR * map(focusN, 0, 1, 0, 0.045);
-  // 감수성 → 패싯 마디를 잇는 격자 연결 곡선의 부풀림(0=거의 육각형 그대로, 1=크게 휘는 곡선)
-  const arcBow = map(curv, 0, 1, 0, 1);
-
-  // 외곽~중간~내곽 안내원(원본의 3겹 원). 계획성이 낮으면(wobble>0) 대칭적으로 살짝 굴곡진다.
-  strokes.push(circlePtsWavy(cx, cy, rOuter, facetN, wobble));
-  strokes.push(circlePtsWavy(cx, cy, rMid, facetN, wobble));
-  strokes.push(circlePtsWavy(cx, cy, rGuide, facetN, wobble));
-
-  // 중심 육각 격자 2겹(작은 육각형은 순수 윤곽만, 큰 육각형에만 대각선 3개 전부)
-  strokes.push(...bLattice(cx, cy, hexSmall, facetN, off, false));
-  strokes.push(...bLattice(cx, cy, hexLarge, facetN, off, true, false));
-
-  // 크리스탈 패싯 facetN개(밑변=중간원, 항상 직선 다이아몬드) + 큰 육각형 꼭짓점~구슬 연결 스텁
-  strokes.push(...bFacet(cx, cy, rMid, facetTip, facetN, sharp, off, 0.5, 0.3));
-  strokes.push(...bSpoke(cx, cy, hexLarge, rMid - beadR, facetN, off));
-
-  // 중간원·큰 육각형 꼭짓점 위에 놓이는 구슬 2겹(크기 고정) + 집중력 → 십자 눈금 길이
-  strokes.push(...bBead(cx, cy, rMid, facetN, beadR));
-  strokes.push(...bBead(cx, cy, hexLarge, facetN, beadR * 0.7));
-  strokes.push(...bTick(cx, cy, rMid, facetN, off, tickLen));
-  strokes.push(...bTick(cx, cy, hexLarge, facetN, off, tickLen * 0.7));
-
-  // 중간원에 내접하는 육각 고리(대각선 없음, 구슬들을 잇는 테두리)
-  strokes.push(...bLattice(cx, cy, rMid, facetN, off, false));
-
-  // 인접한 패싯 마디를 잇는 격자 연결 곡선(감수성 → 부풀림 정도)
-  strokes.push(...bArcLink(cx, cy, rMid, rMid, facetN, off, arcBow));
-
-  return strokes;
-}
-
-// ENTJ "성휘(별빛)" 기초 이미지(원본 SVG, viewBox -256~256 기준 반지름 비율을 그대로 사용):
-//   외곽 원 220 · 중간 원 120 · 4방향(상하좌우) 카디널 구슬 2겹 · 중심 점
-//   · 8점 컴퍼스 별 2겹(바깥은 날카롭게 골/끝 비율≈0.28, 안쪽은 뭉툭하게 비율≈0.79)
-//   · 4방향 크리스탈 패싯(밑 144~끝 192) + 중간원에서 뻗은 연결 스텁
-function starburstGlyph({ cx, cy, N, outerR, sharp, curv, wobble, focusN }) {
-  const strokes = [];
-  const rOuter = outerR;
-  const rMid = outerR * 0.545;        // 120/220
-  const facetBase = outerR * 0.655;   // 144/220
-  const facetTip = outerR * 0.873;    // 192/220
-  const stubEnd = outerR * 0.764;     // 168/220
-
-  // N(6~14, 창의성 기준)을 그대로 쓰면 창의성 기본값(50)이 4방향과 어긋난다. -6 보정해서
-  // 창의성 50일 때 정확히 원본과 같은 4방향(상하좌우)이 되게 맞춘다.
-  const facetN = Math.max(4, N - 6);
-  const arms = facetN; // 이 유형은 별의 팔 수와 패싯 개수가 같다(둘 다 카디널 방향)
-
-  // 좌우대칭을 깨는 회전(스월)은 쓰지 않는다 — 항상 원본과 같은 정렬을 유지.
-  const off = 0;
-
-  // 구슬 크기는 원본 비율로 고정(8/220). 집중력은 마디 위 십자 눈금 길이로 표현한다.
-  const beadR = outerR * 0.03636;
-  const tickLen = outerR * map(focusN, 0, 1, 0, 0.045);
-  // 감수성 → 패싯끼리 잇는 연결 곡선의 부풀림 정도(0=거의 사각형 그대로, 1=크게 휘는 곡선)
-  const arcBow = map(curv, 0, 1, 0, 1);
-
-  // 외곽·중간 안내원(계획성이 낮으면 대칭적으로 살짝 굴곡)
-  strokes.push(circlePtsWavy(cx, cy, rOuter, facetN, wobble));
-  strokes.push(circlePtsWavy(cx, cy, rMid, facetN, wobble));
-
-  // 8점 컴퍼스 별 2겹 — 바깥(날카로움)·안쪽(뭉툭함)이 서로 다른 골/끝 비율
-  strokes.push(...bBurst(cx, cy, outerR * 0.4318, arms, sharp, off, 0.40, 0.17));
-  strokes.push(...bBurst(cx, cy, outerR * 0.3273, arms, sharp, off, 0.90, 0.68));
-  strokes.push(circlePts(cx, cy, outerR * 0.0182, 20)); // 중심 점
-
-  // 카디널 구슬 2겹(크기 고정) + 집중력 → 십자 눈금
-  strokes.push(...bBead(cx, cy, rOuter, facetN, beadR));
-  strokes.push(...bBead(cx, cy, rMid, facetN, beadR));
-  strokes.push(...bTick(cx, cy, rOuter, facetN, off, tickLen));
-  strokes.push(...bTick(cx, cy, rMid, facetN, off, tickLen));
-
-  // 크리스탈 패싯(카디널 방향, 항상 직선) + 중간원에서 뻗은 연결 스텁
-  strokes.push(...bFacet(cx, cy, facetBase, facetTip, facetN, sharp, off, 0.48, 0.27));
-  strokes.push(...bSpoke(cx, cy, rMid, stubEnd, facetN, off));
-
-  // 패싯끼리 잇는 연결 곡선(감수성 → 부풀림 정도)
-  strokes.push(...bArcLink(cx, cy, facetBase, facetBase, facetN, off, arcBow));
-
-  return strokes;
-}
-
-const CUSTOM_GLYPHS = {
-  INTJ: crystalConstellationGlyph,
-  INTP: latticeCrystalGlyph,
-  ENTJ: starburstGlyph,
-};
-
-/* ────────────────────────────────────────────────────────────
-   6. 문양 생성기 (지표 → 대칭 만다라 폴리라인)
-──────────────────────────────────────────────────────────── */
-// ── 나선/윤곽겹치기 문양 생성기 (로봇 펜플로터 친화 버전) ─────────────────
-// 기존 문양은 "작은 원(구슬·중심점)"이 많아 로봇이 콕콕 끊어 그렸다. 여기서는 유형 실루엣을
-// 겹쳐 그려 작은 원을 전부 없애고, 길게 흐르는 큰 폴리라인(각 겹 = 획 1개)만 남긴다.
-//   · 유기형(하트·꽃·잎·물결·방패·톱니…) : 회전+축소 "나선"
-//   · 뾰족형(결정·별·다이아)               : 회전 없이 동심 축소 "윤곽 겹치기"(별을 살림)
-// 개성은 성향 벡터 4종으로 파라미터에 매핑한다(2026-07-23 6종→4종 간소화, 창의성=옛 창의성+
-// 도전성, 몰입도=옛 집중력+계획성 병합).
-//   MBTI 유형 → 기본 도형   창의성 → 대칭 차수 N · 퍼짐/조밀   몰입도 → 겹 수 · 나선 회전 규칙성
-//   사교성 → 크기   감수성 → 물결 변조
-const SPIKY_SIL = { crystal: 1, star12: 1, diamond: 1 };
-// ── 나선 "감김 리듬"(growth family) ──────────────────────────────────────
-// [2026-07-23] 지금까지는 겹마다 sc=ratio^k 한 가지(로그/황금나선 계열: 자기유사,
-// 중심으로 갈수록 겹이 촘촘해짐)만 썼다. 실제 나선에는 여러 갈래가 있다(참고: 아르키메데스
-// 나선=겹 간격이 항상 일정 · 로그/황금나선=자기유사 지수축소 · 페르마 나선=바깥은 성기고
-// 안쪽으로 갈수록 급격히 촘촘 · 로즈 변조=팽팽/느슨을 오가는 파동). 기질군(NT/NF/ST/SF)마다
-// 다른 감김 리듬을 배정해 "같은 실루엣이어도 감기는 느낌 자체가 다르게" 만든다.
 function temperamentOf(type) {
   const isN = type[1] === "N", isT = type[2] === "T";
   return isN ? (isT ? "NT" : "NF") : (isT ? "ST" : "SF");
 }
-const GROWTH_FAMILY = { NT: "fermat", NF: "log", ST: "archimedean", SF: "osc" };
-// endScale = 겹수만큼 지났을 때 도달하는 최종 축소율(로그나선 기준과 동일한 종착점).
-// 다른 감김 리듬도 이 종착점은 같게 맞추고 "거기 도달하는 곡선 모양"만 다르게 한다 —
-// 그래야 도전성/창의성이 결정하는 "얼마나 퍼지는지"는 리듬과 무관하게 일관되게 유지된다.
-function growthScale(family, k, layers, ratio) {
+// 기질군별 감김/중첩 리듬(구 GROWTH_FAMILY 승계·확장) — 층간 반지름 수열의 곡선 모양.
+const RHYTHM = { NT: "fermat", NF: "log", ST: "archimedean", SF: "osc" };
+const MIN_RATIO = 0.14;   // 중심부 최소 반지름 비율 — 로봇 급곡률 방지 floor
+// k번째 층 스케일(1 → endScale). endScale 을 floor 위로 클램프한 뒤, 각 리듬은
+// "거기 도달하는 곡선 모양"만 다르게 한다(종착점 동일 → 퍼짐 정도는 ratio 가 일관 결정).
+function rhythmScale(rhythm, k, layers, ratio) {
   const t = layers > 1 ? k / (layers - 1) : 0;
-  const endScale = Math.pow(ratio, layers - 1);
+  const endScale = Math.max(Math.pow(ratio, layers - 1), MIN_RATIO);
   let sc;
-  if (family === "archimedean") sc = 1 + (endScale - 1) * t;               // 선형(일정 간격)
-  else if (family === "fermat") sc = 1 + (endScale - 1) * Math.pow(t, 1.8); // 바깥 성기고 안쪽 촘촘
-  else if (family === "osc") sc = Math.pow(ratio, k) * (1 + 0.18 * Math.cos(3.5 * Math.PI * t)); // 파동(나이테)
-  else sc = Math.pow(ratio, k);                                            // log(기본, 자기유사)
-  return Math.max(0.04, sc);
+  if (rhythm === "archimedean") sc = 1 + (endScale - 1) * t;                 // 등간격(나이테)
+  else if (rhythm === "fermat") sc = 1 + (endScale - 1) * Math.pow(t, 1.8);  // 바깥 성김→중심 응축
+  else if (rhythm === "osc") sc = Math.pow(endScale, t) * (1 + 0.14 * Math.cos(3.5 * Math.PI * t)); // 파동(조가비)
+  else sc = Math.pow(endScale, t);                                           // log(자기유사·황금)
+  return Math.max(MIN_RATIO * 0.92, Math.min(1.04, sc));
 }
-// 유형별 "결" — FAMILY 테이블에서 여러 유형이 같은 실루엣을 공유한다(예: INFJ·ENFJ·ENFP 는
-// 전부 blossom, ISFJ·ESFP 는 전부 wave, INTJ·ENTP 는 crystal, INTP·ISTJ 는 hexagon).
-// 나선 알고리즘은 실루엣에 크게 좌우되기 때문에 그대로 두면 이 유형들이 서로 거의 똑같아
-// 보인다. 응답과 무관하게 "유형 코드 자체"에서 고정 오프셋(찌그러짐 비율·회전 기준)을
-// 만들어 매번 더해서, 같은 실루엣을 쓰는 유형끼리도 항상 다르게 갈리도록 한다.
+// [2층] 뒤 3글자 → 유형 고정 스타일. N/S 는 모티프 자체(곡선계 vs 직선계)에 이미 반영돼
+// 있어 여기서는 T/F(구조선·라운딩)와 J/P(균일 vs 지터·열린획)만 다룬다.
+function letterStyle(type) {
+  const T = type[2] === "T", P = type[3] === "P";
+  return {
+    waveBase: T ? 0 : 0.015,       // F: 기본 라운딩 물결
+    waveSpan: T ? 0.02 : 0.055,    // 감수성이 물결에 기여하는 최대폭(T는 상한 축소)
+    structOn: T,                   // T: 구조선(현·스포크) 추가
+    spacingJitter: P ? 0.045 : 0,  // P: 층 간격 지터(seed 기반 → 같은 응답=같은 문양)
+    openStroke: P,                 // P: 일부 획 끝을 열어 미완의 개방감
+  };
+}
+// [3층] 성향벡터 → 연속 파라미터.
+//   creativity → 대칭차수 N·퍼짐(ratio)   focus → 겹수·감김세기/구조선밀도
+//   sociability → 전체 크기   sensitivity → 물결(호출측에서 p.wave 로 주입)
+function mapVectors(V, fam, flavor, complexity) {
+  const N = Math.max(4, Math.min(14, Math.round(map(V.creativity, 0, 100, 6, 12)) + flavor.nNudge));
+  const outerR = map(V.sociability, 0, 100, 205, 275);
+  let layers, dTheta, ratio, structDensity;
+  if (fam === "spiral") {
+    layers = Math.round(map(V.focus, 0, 100, 11, 20) * (0.62 + 0.5 * complexity));
+    layers = Math.max(7, Math.min(22, layers));
+    dTheta = map(V.focus, 0, 100, 12, 5) * Math.PI / 180 * flavor.thetaMul;
+    ratio = map(V.creativity, 0, 100, 0.93, 0.965);
+    structDensity = 0;
+  } else {
+    layers = Math.round(map(V.focus, 0, 100, 3.4, 6.6) * (0.72 + 0.4 * complexity));
+    layers = Math.max(3, Math.min(8, layers));
+    dTheta = 0;
+    ratio = map(V.creativity, 0, 100, 0.78, 0.90);
+    structDensity = Math.round(map(V.focus, 0, 100, 2, 6));
+  }
+  return { N, outerR, layers, dTheta, ratio, structDensity };
+}
+// 유형 해시 고정 변주(승계) — 같은 계열·같은 리듬 유형끼리도 항상 갈리게.
 function typeFlavor(type) {
   const h = hashInts(type.split("").map((c) => c.charCodeAt(0)));
   const r = mulberry32(h);
   return {
-    squeeze: 0.82 + r() * 0.36,      // 0.82~1.18 — 실루엣을 유형별로 살짝 다르게 눌러 늘림
-    rotBase: r() * 2 * Math.PI,      // 유형별 고정 회전 기준
-    // 겹수가 많은 회전나선은 squeeze 만으로는 회전에 묻혀 티가 잘 안 난다(여러 각도로 돌아간
-    // 타원의 포락선은 겹칠수록 다시 둥글어짐). 대칭 차수 N 자체를 유형마다 ±2 흔들어 꽃잎/
-    // 패싯/변 개수를 확실히 다르게 만든다 — 같은 실루엣(blossom·crystal·hexagon·wave)을
-    // 공유하는 유형끼리도 이걸로 뚜렷하게 갈린다.
+    squeeze: 0.86 + r() * 0.28,          // I계열 실루엣 눌러늘임(E계열은 대칭 유지 위해 미사용)
+    rotBase: r() * 2 * Math.PI,
     nNudge: Math.round((r() - 0.5) * 4), // -2~+2
-    // 겹수가 많은 유형(꽃 계열 등)은 꽃잎 수 차이도 회전에 묻혀 잘 안 보인다. 회전 속도
-    // 자체(감기는 정도 — 느슨한 장미 vs 촘촘히 꼬인 소용돌이)를 유형마다 다르게 하면 실루엣이
-    // 같아도 "감긴 결"이 확연히 달라진다. 0.6~1.6배로 dTheta 를 늘리거나 줄인다.
-    thetaMul: 0.6 + r() * 1.0,
+    thetaMul: 0.6 + r() * 1.0,           // 감김 속도 배율
   };
 }
+
+// ── 공용 헬퍼 ──────────────────────────────────────────────
+function ringOf(shapePolar, cx, cy, sc, rot, wave, N, squeeze) {
+  return shapePolar.map(([th, rho]) => {
+    const rr = rho * sc * (1 + (wave ? wave * Math.cos(N * (th + Math.PI / 2)) : 0));
+    return [cx + Math.cos(th + rot) * rr, cy + Math.sin(th + rot) * rr * squeeze];
+  });
+}
+function trimEnds(pts, frac) {   // P: 획 양끝을 잘라 "열린 획"으로
+  const cut = Math.max(1, Math.floor(pts.length * frac));
+  return pts.slice(cut, pts.length - cut);
+}
+function lineStroke(a, b, seg = 12) {
+  const p = [];
+  for (let i = 0; i <= seg; i++) { const t = i / seg; p.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]); }
+  return p;
+}
+function triangleRing(cx, cy, r, up = true) {
+  const rot = up ? -Math.PI / 2 : Math.PI / 2;
+  return polygonRaw(3, { rot }).map(([x, y]) => [cx + x * r, cy + y * r]);
+}
+
+// ── I 계열: 나선 8종 (모티프 → makeShape 실루엣, 층마다 회전+축소) ────────
+const SPIRAL_SIL = {
+  crystalFermat: "crystal",  // INTJ — 결정면이 중심으로 응축(fermat)
+  latticeLog: "hexagon",     // INTP — 나선 팔 사이 현(chord) 거미줄
+  blossomGolden: "blossom",  // INFJ — 황금(로그) 꽃나선
+  petalDrift: "bud",         // INFP — 흩날린 꽃잎(열린 획)
+  ringCoil: "circle",        // ISTJ — 등간격 나이테 코일
+  shellGuard: "wave",        // ISFJ — 조가비 파동 나선
+  gearSegment: "gear",       // ISTP — 톱니 마디 나선
+  leafCurrent: "leaf",       // ISFP — 잎맥 물결 나선
+};
+function spiralGlyph(motif, p, rhythm, style, flavor, rng, cx, cy) {
+  const sil = SPIRAL_SIL[motif] || "circle";
+  const wave = style.waveBase + p.wave;
+  // latticeLog 는 현 스트로크가 추가되므로 겹수를 줄여 총 획수 상한(~25)을 지킨다.
+  let layers = motif === "latticeLog" ? Math.min(p.layers, 18) : p.layers;
+  let dTheta = p.dTheta;
+  if (motif === "crystalFermat") {
+    // 결정 실루엣은 스파이크 골이 깊어, 회전이 크면 골끼리 겹쳐 중심이 뭉개진다.
+    // 회전을 확 줄여(결정면이 거의 정렬된 채 살짝 비틀림) fermat 응축이 읽히게 한다.
+    dTheta *= 0.3;
+    layers = Math.min(layers, 12);
+  } else if (motif === "leafCurrent") {
+    // 잎(렌즈꼴)을 작은 회전으로 겹치면 엉킨 눈(目) 모양이 된다. 실제 식물의 잎차례
+    // (phyllotaxis)처럼 황금각(137.5°)씩 돌리면 해바라기식 잎 로제트가 된다 —
+    // "잎맥 물결"의 상징(자연·감각)에도 정확히 부합. thetaMul 로 유형 결만 살짝 가감.
+    dTheta = 2.39996 * (0.97 + 0.06 * (flavor.thetaMul - 1.1));
+  }
+  const shape = makeShape(sil, cx, cy, p.outerR, p.N);
+  const rot0 = flavor.rotBase + rng() * (dTheta || (2 * Math.PI / p.N));
+  const strokes = [], layerAnchor = [];
+  for (let k = 0; k < layers; k++) {
+    let sc = rhythmScale(rhythm, k, layers, p.ratio);
+    if (style.spacingJitter) sc *= 1 + (rng() - 0.5) * 2 * style.spacingJitter;
+    const rot = rot0 + k * dTheta;
+    let ring = ringOf(shape.polar, cx, cy, sc, rot, wave, p.N, flavor.squeeze);
+    if (style.openStroke && k % 3 === 1) ring = trimEnds(ring, 0.06 + rng() * 0.06);
+    strokes.push(ring);
+    layerAnchor.push([cx + Math.cos(rot) * p.outerR * sc,
+                      cy + Math.sin(rot) * p.outerR * sc * flavor.squeeze]);
+  }
+  if (motif === "latticeLog" && style.structOn) {
+    // 나선 팔을 가로지르는 현: 층 k 기준점 → 층 k+3 기준점(사고의 연결망)
+    const step = 3, chords = Math.min(5, layers - step);
+    for (let j = 0; j < chords; j++) strokes.push(lineStroke(layerAnchor[j], layerAnchor[j + step]));
+  }
+  return strokes;
+}
+
+// ── E 계열: 기하 8종 (무회전 중첩 + 구조선) ────────────────────────────────
+function geoGlyph(motif, p, rhythm, style, flavor, rng, cx, cy) {
+  const strokes = [];
+  const R = p.outerR, floorR = R * MIN_RATIO;
+  const scAt = (k, L) => rhythmScale(rhythm, k, L, p.ratio);
+  const jit = () => (style.spacingJitter ? 1 + (rng() - 0.5) * 2 * style.spacingJitter : 1);
+  const wave = style.waveBase + p.wave;
+
+  if (motif === "merkabaCommand") {
+    // ENTJ — 위/아래 삼각 교대 중첩(헥사그램 긴장) + 육각 현 + 중심 허브(한 점 금지 → floor 원).
+    for (let k = 0; k < p.layers; k++)
+      strokes.push(triangleRing(cx, cy, R * scAt(k, p.layers) * jit(), k % 2 === 0));
+    if (style.structOn) {
+      const hex = [];
+      for (let i = 0; i <= 6; i++) hex.push(polar(cx, cy, -Math.PI / 2 + (i * Math.PI) / 3, R * 0.72));
+      strokes.push(hex);
+    }
+    strokes.push(circlePts(cx, cy, floorR));
+  } else if (motif === "sparkLattice") {
+    // ENTP — 별 윤곽 중첩 + 꼭짓점을 건너뛰며 잇는 불규칙 현(발상의 연결망, P지터).
+    // 별 실루엣은 골이 깊어 rhythmScale 로 중심(0.14)까지 응축시키면 골끼리 겹쳐
+    // 중앙이 까맣게 뭉친다 → 얕은 고정 수열(1, 0.82, 0.67, 0.55)로 바깥쪽만 중첩.
+    const star = makeShape("crystal", cx, cy, R, p.N);
+    const L = Math.min(4, p.layers);
+    for (let k = 0; k < L; k++)
+      strokes.push(ringOf(star.polar, cx, cy, Math.pow(0.82, k) * jit(), 0, 0, p.N, 1));
+    const m = Math.max(5, Math.min(8, Math.round(p.N / 2)));   // crystal 실루엣의 실제 대칭수와 일치
+    const tip = (i, r) => polar(cx, cy, -Math.PI / 2 + (i * 2 * Math.PI) / m, r);
+    const chords = Math.min(p.structDensity + 2, 7);
+    for (let j = 0; j < chords; j++) {
+      // skip=2 고정(m이 작을 때 skip 3이면 현이 중심 근처를 지나 floor 규칙 위반), m≥7이면 가끔 3.
+      const i = Math.floor(rng() * m), skip = m >= 7 && rng() < 0.5 ? 3 : 2;
+      strokes.push(lineStroke(tip(i, R * 0.92 * jit()), tip(i + skip, R * (0.5 + rng() * 0.35))));
+    }
+  } else if (motif === "axiomGrid") {
+    // ESTJ — 정육각 중첩(0°/30° 교대 = 등축 격자감) + 방사 스포크(제도·구조).
+    for (let k = 0; k < p.layers; k++) {
+      const r = R * scAt(k, p.layers);
+      strokes.push(polygonRaw(6, { rot: -Math.PI / 2 + (k % 2) * (Math.PI / 6) })
+        .map(([x, y]) => [cx + x * r, cy + y * r]));
+    }
+    if (style.structOn)
+      for (let i = 0; i < 6; i++) {
+        const a = -Math.PI / 2 + (i * Math.PI) / 3;
+        strokes.push(lineStroke(polar(cx, cy, a, floorR), polar(cx, cy, a, R)));
+      }
+  } else if (motif === "yantraDrive") {
+    // ESTP — 스리얀트라 원리: 크기가 다른 위/아래 삼각의 교차 긴장 + 외곽원 + 중심 허브.
+    strokes.push(circlePts(cx, cy, R));
+    for (let k = 0; k < p.layers; k++)
+      strokes.push(triangleRing(cx, cy, R * 0.9 * scAt(k, p.layers) * jit(), k % 2 === 1));
+    strokes.push(circlePts(cx, cy, floorR));   // bindu — 한 점 대신 floor 원
+  } else if (motif === "radiantVesica") {
+    // ENFJ — 베시카(둘의 합일) 꽃잎 로제트 + 인도하는 방사 빛살 + 외곽원.
+    // bPetal(꽃잎당 2획: 겹꽃잎)은 획수 상한을 넘기므로 홑겹 petalOutline 을 직접 사용.
+    const petalN = Math.max(6, Math.min(10, p.N));
+    strokes.push(circlePts(cx, cy, R));
+    for (let i = 0; i < petalN; i++) {
+      const ang = (i * 2 * Math.PI) / petalN - Math.PI / 2;
+      strokes.push(petalOutline(cx, cy, ang, R * 0.30, R * 0.88, 0.6 + wave * 4, 0.35));
+    }
+    const rays = Math.min(p.structDensity + 3, 8);
+    for (let i = 0; i < rays; i++) {
+      const a = -Math.PI / 2 + (i * 2 * Math.PI) / rays;
+      strokes.push(lineStroke(polar(cx, cy, a, R * 0.90), polar(cx, cy, a, R * 0.99)));
+    }
+    strokes.push(circlePts(cx, cy, R * 0.30));
+  } else if (motif === "seedBurst") {
+    // ENFP — Seed of Life 원리: 서로를 지나는 원들. P: 배치 지터 + 일부 원 열림(가능성).
+    const n = Math.max(5, Math.min(8, Math.round(p.N * 0.7)));
+    const r0 = R * 0.46;
+    strokes.push(circlePts(cx, cy, r0));
+    for (let i = 0; i < n; i++) {
+      const c = polar(cx, cy, flavor.rotBase + (i * 2 * Math.PI) / n, r0 * jit());
+      let ring = circlePts(c[0], c[1], r0 * (0.96 + (rng() - 0.5) * 0.06));
+      if (style.openStroke && i % 2 === 1) ring = trimEnds(ring, 0.08);
+      strokes.push(ring);
+    }
+    strokes.push(circlePts(cx, cy, R * 0.98));
+  } else if (motif === "flowerCommons") {
+    // ESFJ — Flower of Life 축소판(중심+6원, 여유 시 두 번째 고리 6원). 전부 닫힘·균일(J).
+    const r0 = R * 0.34;
+    strokes.push(circlePts(cx, cy, r0));
+    for (let i = 0; i < 6; i++) {
+      const c = polar(cx, cy, -Math.PI / 2 + (i * Math.PI) / 3, r0);
+      strokes.push(circlePts(c[0], c[1], r0));
+    }
+    if (p.layers >= 5)
+      for (let i = 0; i < 6; i++) {
+        const c = polar(cx, cy, -Math.PI / 2 + Math.PI / 6 + (i * Math.PI) / 3, r0 * 1.732);
+        strokes.push(circlePts(c[0], c[1], r0));
+      }
+    strokes.push(circlePts(cx, cy, R * 0.98));
+  } else {
+    // ESFP torusStage — 동심 링+스캘럽 링 교대(순환·무대 조명 리듬).
+    const L = Math.max(4, p.layers + 2);
+    for (let k = 0; k < L; k++) {
+      const r = R * scAt(k, L);
+      strokes.push(k % 2 === 0 ? circlePts(cx, cy, r)
+                               : circlePtsWavy(cx, cy, r, Math.max(8, p.N), 0.05 + wave));
+    }
+  }
+  return strokes;
+}
+
 function generateGlyph(type, V, seed, complexity = 0.7) {
   const rng = mulberry32(seed);
   const cx = 300, cy = 300;
   const spec = FAMILY[type] || FAMILY.INFP;
-  const sil = spec.silhouette;
-  const spiky = !!SPIKY_SIL[sil];
+  const fam = type[0] === "I" ? "spiral" : "geo";     // [1층] 내향=나선 / 외향=기하
+  const rhythm = RHYTHM[temperamentOf(type)];
   const flavor = typeFlavor(type);
-
-  const N = Math.max(4, Math.round(map(V.creativity, 0, 100, 6, 14)) + flavor.nNudge); // 창의성 → 대칭 차수(유형별 ±2 보정)
-  const outerR = map(V.sociability, 0, 100, 205, 275);          // 사교성 → 크기
-  const wave = spiky ? 0 : map(V.sensitivity, 0, 100, 0, 0.06); // 감수성 → 물결(뾰족형은 별을 해쳐 0)
-
-  let layers, dTheta, ratio;
-  if (spiky) {
-    // 윤곽 겹치기: 회전 없이(dTheta=0 → 별 정렬 유지) 동심으로 축소한 별 윤곽을 겹쳐
-    // 크리스탈 패싯을 만든다. 회전을 주면 성게처럼 뭉개지므로 뾰족형은 회전을 쓰지 않는다.
-    layers = Math.round(map(V.focus, 0, 100, 6, 12) * (0.6 + 0.5 * complexity));
-    dTheta = 0;
-    ratio = map(V.creativity, 0, 100, 0.90, 0.83);   // 창의성(옛 도전성 포함)↑ → 안쪽까지 촘촘한 겹
-  } else {
-    // 회전+축소 나선.
-    layers = Math.round(map(V.focus, 0, 100, 16, 30) * (0.55 + 0.60 * complexity));
-    dTheta = map(V.focus, 0, 100, 12, 5) * Math.PI / 180 * flavor.thetaMul; // 몰입도(옛 계획성 포함)↑→회전각↓(정갈) · 유형별 감김 속도
-    ratio = map(V.creativity, 0, 100, 0.930, 0.965);          // 창의성(옛 도전성 포함)↑ → 넓게 퍼짐
-  }
-  layers = Math.max(6, Math.min(40, layers));
-
-  // 같은 벡터여도 seed 로 전체를 미세 회전시켜 고유성 유지 + 유형별 고정 회전 기준을 더한다.
-  const rot0 = flavor.rotBase + rng() * (dTheta || (2 * Math.PI / Math.max(1, N)));
-
-  const rawShape = makeShape(sil, cx, cy, outerR, N);   // [th, rho] 극좌표(rho 최대 = outerR)
-  // 유형별 찌그러짐(squeeze): 실루엣을 데카르트로 풀어 세로로 눌러늘인 뒤 다시 극좌표로.
-  const shape = { polar: rawShape.polar.map(([th, rho]) => {
-    const x = Math.cos(th) * rho, y = Math.sin(th) * rho * flavor.squeeze;
-    return [Math.atan2(y, x), Math.hypot(x, y)];
-  }) };
-  const growth = GROWTH_FAMILY[temperamentOf(type)];
-  const strokes = [];
-  for (let k = 0; k < layers; k++) {
-    const sc = growthScale(growth, k, layers, ratio), rot = rot0 + k * dTheta;
-    const pts = shape.polar.map(([th, rho]) => {
-      const rr = rho * sc * (1 + wave * Math.cos(N * (th + Math.PI / 2)));
-      return [cx + Math.cos(th + rot) * rr, cy + Math.sin(th + rot) * rr];
-    });
-    strokes.push(pts);
-  }
-  return strokes;
+  const style = letterStyle(type);                     // [2층]
+  const p = mapVectors(V, fam, flavor, complexity);    // [3층]
+  p.wave = map(V.sensitivity, 0, 100, 0, style.waveSpan);
+  return fam === "spiral"
+    ? spiralGlyph(spec.motif, p, rhythm, style, flavor, rng, cx, cy)
+    : geoGlyph(spec.motif, p, rhythm, style, flavor, rng, cx, cy);
 }
 
 /* ────────────────────────────────────────────────────────────

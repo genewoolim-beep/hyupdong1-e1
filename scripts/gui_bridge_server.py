@@ -54,7 +54,7 @@ CURRENT_JOB_ID: list = [None]     # 가장 최근/실행 중인 job — /estop �
 # main()에서 CLI 인자로 채움
 # 안전 리셋: 컨트롤러 재기동 후 누적 상승시켜둔 배율이 그대로(클램핑 없이) 적용돼
 # 위험하게 빨라지는 게 실기에서 확인됨 → 전부 원본 DRL 속도(1.0)로 되돌림.
-CONFIG = {'plate_size_mm': 90.0,
+CONFIG = {'plate_size_mm': 112.5,
          'pen_up_speed': 0.595, 'pen_down_speed': 0.595, 'brush_speed': 0.6375, 'grab_speed': 0.85}
 
 
@@ -270,7 +270,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--port', type=int, default=8787)
-    ap.add_argument('--plate-size-mm', type=float, default=90.0)
+    ap.add_argument('--plate-size-mm', type=float, default=112.5)
     ap.add_argument('--pen-up-speed', type=float, default=0.595,
                     help='pen_up 속도 배율. 기본 0.595(0.7에서 -15%%)')
     ap.add_argument('--pen-down-speed', type=float, default=0.595,

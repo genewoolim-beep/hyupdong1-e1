@@ -143,31 +143,40 @@ function circlePtsWavy(cx, cy, r, N, amp, n = 160) {
 /* ────────────────────────────────────────────────────────────
    4. MBTI 16종 → 모티프 매칭
    각 유형은 label(결과화면 표시명)과 motif(6절 문양 생성기의 빌더 키)로 구성.
-   I 8종은 나선 계열(SPIRAL_SIL 로 makeShape 실루엣 매핑), E 8종은 기하 계열
-   (geoGlyph 안의 모티프별 빌더). 상세 상징 근거는 6절 주석 참고.
+   16종 전부 나선 계열(SPIRAL_SIL 로 makeShape 실루엣 매핑) 하나로 통일한다.
+   E 8종은 뒤 3글자(N·S/T·F/J·P)가 같은 I 유형과 motif를 그대로 공유한다.
+   몰입도·사교성은 generateGlyph에서 I/E 각자의 하위 구간으로 선형 매핑해 넣는다
+   (I: 몰입50~100/사교0~50 · E: 몰입0~50/사교50~100) — 슬라이더를 올리면 I/E 둘 다
+   항상 같은 방향으로 반응하고(반전 아님), 슬라이더 전 구간에서 죽는 부분 없이
+   계속 반응하면서도 같은 슬라이더 값에서 E가 항상 더 크고 성글게 나온다.
 ──────────────────────────────────────────────────────────── */
-// [2026-07-25 재설계] I=나선(내향: 안으로 감기는 여정) / E=기하(외향: 중심에서 뻗는 구조).
-// motif 는 generateGlyph 의 모티프 빌더 키. 신성기하학 상징(메르카바·얀트라·베시카·
-// Seed/Flower of Life·토러스 등)의 "구성 원리"만 차용해 자체 알고리즘으로 생성한다.
+// [2026-07-25 재설계 → 같은 날 재통합] 애초엔 I=나선(내향)/E=기하(외향)로 나눴었으나,
+// geoGlyph 계열은 걷어내고 16종 전부 spiralGlyph 하나로 합쳤다. I/E 차이는 처음엔
+// 몰입도·사교성을 통째로 거울반전(100−값)했는데 슬라이더를 올려도 E는 반대로 반응해
+// 헷갈렸고, 그다음엔 고정 오프셋(±50)을 더하고 clamp했는데 이번엔 슬라이더 절반
+// 구간이 0/100에 눌어붙어 그 구간에서 전혀 안 바뀌는 "죽은 구간"이 생겼다 → clamp
+// 대신 0~100 입력 전체를 I/E 각자의 하위 구간에 선형으로 늘려 매핑해서 해결.
+// geoGlyph()/그 전용 헬퍼(triangleRing·circlePtsWavy·petalOutline)는 되돌릴 경우를 대비해
+// 코드에는 남겨뒀지만 더는 호출되지 않는다.
 const FAMILY = {
   // I — 나선 8종 (회전+축소, 감김리듬은 기질군 RHYTHM 승계)
   INTJ: { label: "결정 나선", motif: "crystalFermat" },
-  INTP: { label: "격자 나선", motif: "latticeLog" },
-  INFJ: { label: "황금 꽃나선", motif: "blossomGolden" },
-  INFP: { label: "흩날린 꽃잎", motif: "petalDrift" },
-  ISTJ: { label: "나이테 코일", motif: "ringCoil" },
+  INTP: { label: "불규칙 결정 나선", motif: "crystalDrift" },
+  INFJ: { label: "별사면체 나선", motif: "starTetraSpiral" },
+  INFP: { label: "잎맥 물결", motif: "leafCurrent" },
+  ISTJ: { label: "사각 나선", motif: "squareSpiral" },
   ISFJ: { label: "조가비 나선", motif: "shellGuard" },
-  ISTP: { label: "톱니 나선", motif: "gearSegment" },
-  ISFP: { label: "잎맥 물결", motif: "leafCurrent" },
-  // E — 기하 8종 (무회전 윤곽 중첩 + 구조선)
-  ENTJ: { label: "메르카바", motif: "merkabaCommand" },
-  ENTP: { label: "스파크 격자", motif: "sparkLattice" },
-  ESTJ: { label: "공리 격자", motif: "axiomGrid" },
-  ESTP: { label: "얀트라 추진", motif: "yantraDrive" },
-  ENFJ: { label: "베시카 방사", motif: "radiantVesica" },
-  ENFP: { label: "씨앗 만개", motif: "seedBurst" },
-  ESFJ: { label: "생명의 꽃", motif: "flowerCommons" },
-  ESFP: { label: "토러스 무대", motif: "torusStage" },
+  ISTP: { label: "육각 나선", motif: "hexSpiral" },
+  ISFP: { label: "흩날린 꽃잎", motif: "petalDrift" },
+  // E — I와 동일 motif(뒤 3글자 매칭), 몰입도/사교성은 I와 반대쪽 하위 구간으로 매핑
+  ENTJ: { label: "결정 나선", motif: "crystalFermat" },
+  ENTP: { label: "불규칙 결정 나선", motif: "crystalDrift" },
+  ESTJ: { label: "사각 나선", motif: "squareSpiral" },
+  ESTP: { label: "육각 나선", motif: "hexSpiral" },
+  ENFJ: { label: "별사면체 나선", motif: "starTetraSpiral" },
+  ENFP: { label: "잎맥 물결", motif: "leafCurrent" },
+  ESFJ: { label: "조가비 나선", motif: "shellGuard" },
+  ESFP: { label: "흩날린 꽃잎", motif: "petalDrift" },
 };
 
 /* ────────────────────────────────────────────────────────────
@@ -476,13 +485,22 @@ function makeShape(name, cx, cy, R, N) {
     case "shield":  raw = shieldRaw(); break;
     case "leaf":    raw = rotateRaw(superRaw({ m: 2, n1: 0.6, n2: 0.6, n3: 0.6 }), Math.PI / 2); break;
     case "hexagon": raw = polygonRaw(ci(N, 5, 9), { rot: -Math.PI / 2 }); break;
+    case "hexagon6": raw = polygonRaw(6, { rot: -Math.PI / 2 }); break;   // 고정 정육각(N 무관, hex_spiral.svg 원본과 동일)
+    case "square4":  raw = polygonRaw(4, { rot: -Math.PI / 4 }); break;   // 고정 정사각(축정렬, spiral_squares.svg 원본과 동일)
+    case "triUp":    raw = polygonRaw(3, { rot: -Math.PI / 2 }); break;   // 별사면체용 위삼각(꼭짓점 위)
+    case "triDown":  raw = polygonRaw(3, { rot: Math.PI / 2 }); break;    // 별사면체용 아래삼각(꼭짓점 아래)
     case "diamond": raw = polygonRaw(4, { rot: -Math.PI / 2, stretchY: 1.28 }); break;
     case "gear":    raw = gearRaw(ci(N, 10, 16)); break;
-    case "wave":    raw = waveRaw(ci(N, 8, 14), 0.12); break;
-    case "blossom": raw = superRaw({ m: ci(N / 2, 4, 8), n1: 1, n2: 1.7, n3: 1.7 }); break;
-    case "bud":     raw = superRaw({ m: 5, n1: 1, n2: 1.8, n3: 1.8 }); break;
-    case "crystal": raw = superRaw({ m: ci(N / 2, 5, 8), n1: 0.35, n2: 0.4, n3: 0.4 }); break;
-    case "star12":  raw = superRaw({ m: ci(N, 10, 16), n1: 0.5, n2: 0.6, n3: 0.6 }); break;
+    // wave/blossom/bud/crystal/star12은 |cos|·|sin|을 쓰는 superformula(또는 그와 같은 구조의
+    // waveRaw) 특성상 자기 좌표계에서 항상 "가로축(x축)" 기준으로만 좌우대칭이라, m(대칭수)이
+    // 홀수면 회전 없이는 세로축(진짜 좌우) 대칭이 깨진다(예: N/2가 홀수로 반올림되는 경우가
+    // 흔함). 90도 돌리면 그 가로축 대칭이 세로축 대칭으로 바뀌는데, 이 성질은 m의 홀짝과
+    // 무관하게 항상 성립해서(직접 수치 검증함) 모든 경우에 안전하게 좌우대칭을 보장한다.
+    case "wave":    raw = rotateRaw(waveRaw(ci(N, 8, 14), 0.12), Math.PI / 2); break;
+    case "blossom": raw = rotateRaw(superRaw({ m: ci(N / 2, 4, 8), n1: 1, n2: 1.7, n3: 1.7 }), Math.PI / 2); break;
+    case "bud":     raw = rotateRaw(superRaw({ m: 5, n1: 1, n2: 1.8, n3: 1.8 }), Math.PI / 2); break;
+    case "crystal": raw = rotateRaw(superRaw({ m: ci(N / 2, 5, 8), n1: 0.35, n2: 0.4, n3: 0.4 }), Math.PI / 2); break;
+    case "star12":  raw = rotateRaw(superRaw({ m: ci(N, 10, 16), n1: 0.5, n2: 0.6, n3: 0.6 }), Math.PI / 2); break;
     default:        raw = superRaw({ m: 0, n1: 1, n2: 1, n3: 1 }); break; // circle
   }
   return normalizeShape(raw, cx, cy, R);
@@ -519,16 +537,19 @@ function shapeRipple(shape, cx, cy, s, N, amp, off) {
 }
 
 /* ────────────────────────────────────────────────────────────
-   6. 문양 생성기 — I=나선 / E=기하 (2026-07-25 재설계)
+   6. 문양 생성기 — 16종 전부 나선(spiralGlyph) (2026-07-25 재설계 → 같은 날 재통합)
    3층 구조:
-     [1층] I/E         → 계열 분기: I=회전+축소 나선(안으로 감기는 여정) /
-                         E=무회전 윤곽 중첩+구조선(중심에서 밖으로 뻗음)
+     [1층] I/E         → 같은 motif(뒤 3글자 매칭)를 공유하고, 몰입도·사교성을
+                         각자의 하위 구간(50~100/0~50, 반대로 0~50/50~100)에 선형
+                         매핑한다 — 반응 방향·전 구간 반응성은 I/E 공통, 크기만 다름.
      [2층] N·S/T·F/J·P → 유형 고정 스타일(라운딩·구조선·지터·열린획) + 기질군 감김리듬
      [3층] 성향벡터 4종 → 같은 유형 안의 개인차(연속값: N·겹수·크기·물결)
    신성기하학 상징(메르카바·스리얀트라·베시카·Seed/Flower of Life·토러스)은
    "구성 원리"만 차용해 자체 알고리즘으로 생성(형태 복제 아님).
    로봇 제약: 모든 획=긴 폴리라인(점찍기 금지) · 총 획수 ≤ ~25 ·
              MIN_RATIO floor 로 중심부 급곡률 방지(한 점으로 수렴 금지).
+   ※ geoGlyph()(아래)는 E가 "기하" 계열을 쓰던 이전 설계의 유산으로, 더는 호출되지
+     않는다(되돌릴 경우를 대비해 남겨둠).
 ──────────────────────────────────────────────────────────── */
 function temperamentOf(type) {
   const isN = type[1] === "N", isT = type[2] === "T";
@@ -554,8 +575,8 @@ function rhythmScale(rhythm, k, layers, ratio) {
 function letterStyle(type) {
   const T = type[2] === "T", P = type[3] === "P";
   return {
-    waveBase: T ? 0 : 0.015,       // F: 기본 라운딩 물결
-    waveSpan: T ? 0.02 : 0.055,    // 감수성이 물결에 기여하는 최대폭(T는 상한 축소)
+    waveBase: T ? 0 : 0.009,       // F: 기본 라운딩 물결
+    waveSpan: T ? 0.012 : 0.032,   // 감수성이 물결에 기여하는 최대폭(T는 상한 축소) — 최대치가 너무 심하게 휘어 보여 축소(기존 0.02/0.055)
     structOn: T,                   // T: 구조선(현·스포크) 추가
     spacingJitter: P ? 0.045 : 0,  // P: 층 간격 지터(seed 기반 → 같은 응답=같은 문양)
     openStroke: P,                 // P: 일부 획 끝을 열어 미완의 개방감
@@ -569,9 +590,11 @@ function mapVectors(V, fam, flavor, complexity) {
   const outerR = map(V.sociability, 0, 100, 205, 275);
   let layers, dTheta, ratio, structDensity;
   if (fam === "spiral") {
-    layers = Math.round(map(V.focus, 0, 100, 11, 20) * (0.62 + 0.5 * complexity));
+    // 몰입도 폭을 조금 더 넓혀(겹수 11~20→9~22, 회전각 12~5°→14~3°) 몰입도 차이에
+    // 따른 문양 차이가 더 뚜렷하게 드러나도록 함.
+    layers = Math.round(map(V.focus, 0, 100, 9, 22) * (0.62 + 0.5 * complexity));
     layers = Math.max(7, Math.min(22, layers));
-    dTheta = map(V.focus, 0, 100, 12, 5) * Math.PI / 180 * flavor.thetaMul;
+    dTheta = map(V.focus, 0, 100, 14, 3) * Math.PI / 180 * flavor.thetaMul;
     ratio = map(V.creativity, 0, 100, 0.93, 0.965);
     structDensity = 0;
   } else {
@@ -585,11 +608,14 @@ function mapVectors(V, fam, flavor, complexity) {
 }
 // 유형 해시 고정 변주(승계) — 같은 계열·같은 리듬 유형끼리도 항상 갈리게.
 function typeFlavor(type) {
-  const h = hashInts(type.split("").map((c) => c.charCodeAt(0)));
+  // 앞글자(I/E)는 해시에서 뺀다 — 뒤 3글자(N·S/T·F/J·P)가 같은 I/E 짝(예: INTJ·ENTJ)이
+  // 완전히 같은 flavor(눌러늘임·감김속도)를 공유하게 해서, 미리보기에서 두 짝이 나란히
+  // 있을 때 크기(오프셋)만 다르고 형태·방향은 정렬되어 보인다.
+  const h = hashInts(type.slice(1).split("").map((c) => c.charCodeAt(0)));
   const r = mulberry32(h);
   return {
-    squeeze: 0.86 + r() * 0.28,          // I계열 실루엣 눌러늘임(E계열은 대칭 유지 위해 미사용)
-    rotBase: r() * 2 * Math.PI,
+    squeeze: 0.86 + r() * 0.28,          // 실루엣 눌러늘임
+    rotBase: 0,                          // 회전기준 고정(모든 유형이 같은 방향으로 시작 → 대칭·정렬된 인상)
     nNudge: Math.round((r() - 0.5) * 4), // -2~+2
     thetaMul: 0.6 + r() * 1.0,           // 감김 속도 배율
   };
@@ -615,57 +641,79 @@ function triangleRing(cx, cy, r, up = true) {
   const rot = up ? -Math.PI / 2 : Math.PI / 2;
   return polygonRaw(3, { rot }).map(([x, y]) => [cx + x * r, cy + y * r]);
 }
-
 // ── I 계열: 나선 8종 (모티프 → makeShape 실루엣, 층마다 회전+축소) ────────
 const SPIRAL_SIL = {
   crystalFermat: "crystal",  // INTJ — 결정면이 중심으로 응축(fermat)
-  latticeLog: "hexagon",     // INTP — 나선 팔 사이 현(chord) 거미줄
-  blossomGolden: "blossom",  // INFJ — 황금(로그) 꽃나선
-  petalDrift: "bud",         // INFP — 흩날린 꽃잎(열린 획)
-  ringCoil: "circle",        // ISTJ — 등간격 나이테 코일
+  crystalDrift: "crystal",   // INTP — INTJ와 같은 결정 실루엣이지만 층마다 회전이 들쭉날쭉(아래 참고)
+  hexSpiral: "hexagon6",     // ISTP — samples/hex_spiral.svg 와 같은 정육각 회전축소 나선
+  petalDrift: "bud",         // ISFP — 흩날린 꽃잎(열린 획)
+  squareSpiral: "square4",   // ISTJ — samples/spiral_squares.svg 와 같은 정사각 회전축소 나선
   shellGuard: "wave",        // ISFJ — 조가비 파동 나선
-  gearSegment: "gear",       // ISTP — 톱니 마디 나선
-  leafCurrent: "leaf",       // ISFP — 잎맥 물결 나선
+  // starTetraSpiral(INFJ)은 층마다 삼각형이 위/아래로 번갈아 뒤집히므로(별사면체=메르카바
+  // 원리) 고정 sil 하나로 안 되고 spiralGlyph 안에서 직접 triUp/triDown 두 형태를 골라 쓴다.
+  leafCurrent: "leaf",       // INFP — 잎맥 물결 나선
 };
+// 열린 획(trimEnds로 층 일부를 끊어 미완의 개방감을 주는 openStroke 연출)을 절대 쓰지 않을
+// 모티프 — 육각/별사면체/잎맥/흩날린꽃잎/조가비는 끊긴 구간 없이 항상 완전히 이어지게 한다.
+const NEVER_OPEN_MOTIFS = new Set([
+  "hexSpiral", "starTetraSpiral", "leafCurrent", "petalDrift", "shellGuard",
+]);
 function spiralGlyph(motif, p, rhythm, style, flavor, rng, cx, cy) {
   const sil = SPIRAL_SIL[motif] || "circle";
   const wave = style.waveBase + p.wave;
-  // latticeLog 는 현 스트로크가 추가되므로 겹수를 줄여 총 획수 상한(~25)을 지킨다.
-  let layers = motif === "latticeLog" ? Math.min(p.layers, 18) : p.layers;
+  let layers = p.layers;
   let dTheta = p.dTheta;
+  let rotJitter = 0;
   if (motif === "crystalFermat") {
     // 결정 실루엣은 스파이크 골이 깊어, 회전이 크면 골끼리 겹쳐 중심이 뭉개진다.
     // 회전을 확 줄여(결정면이 거의 정렬된 채 살짝 비틀림) fermat 응축이 읽히게 한다.
     dTheta *= 0.3;
     layers = Math.min(layers, 12);
+  } else if (motif === "crystalDrift") {
+    // INTP/ENTP — INTJ(crystalFermat)는 결정면이 가지런히 정렬되지만, 이쪽은 층마다 회전에
+    // 무작위 흔들림(rotJitter)을 더해 결정이 들쭉날쭉 삐쳐 자란 것처럼 불규칙하게 뻗어나가게 한다.
+    // dTheta를 몰입도의 I/E 가족별 리매핑값(p.dTheta) 그대로 두면 E는 항상 dTheta가 더 커서
+    // (몰입도가 낮은 쪽 구간에 매핑되므로) 같은 rotJitter라도 상대적으로 덜 두드러져 ENTP가
+    // INTP보다 덜 불규칙해 보인다 — 그래서 이 모티프만 몰입도·가족과 무관한 고정 dTheta를
+    // 써서 I/E 둘 다 지터의 지배력이 똑같이 커 보이게 한다.
+    layers = Math.min(layers, 16);
+    dTheta = 0.1 * flavor.thetaMul;
+    rotJitter = 0.45;
   } else if (motif === "leafCurrent") {
     // 잎(렌즈꼴)을 작은 회전으로 겹치면 엉킨 눈(目) 모양이 된다. 실제 식물의 잎차례
     // (phyllotaxis)처럼 황금각(137.5°)씩 돌리면 해바라기식 잎 로제트가 된다 —
     // "잎맥 물결"의 상징(자연·감각)에도 정확히 부합. thetaMul 로 유형 결만 살짝 가감.
     dTheta = 2.39996 * (0.97 + 0.06 * (flavor.thetaMul - 1.1));
+  } else if (motif === "starTetraSpiral") {
+    // 층마다 돌리면 삼각형 변끼리 계속 어긋나며 지저분해 보인다("나선"이 이 모티프엔 안 맞음).
+    // 회전을 0으로 고정해 위/아래 삼각이 층마다 정확히 같은 자리에서 겹치는 하나의 별사면체
+    // 문양 안에, 크기만 다른 겹(층)이 쌓이는 방식으로 바꾼다(겹겹의 메르카바).
+    dTheta = 0;
   }
   const shape = makeShape(sil, cx, cy, p.outerR, p.N);
-  const rot0 = flavor.rotBase + rng() * (dTheta || (2 * Math.PI / p.N));
-  const strokes = [], layerAnchor = [];
+  // 별사면체(메르카바) 나선: 층마다 위/아래 삼각을 번갈아 써서, 회전+축소되며 겹치는 동안
+  // 두 삼각이 계속 엇갈려 스치는 것이 마치 삼각형 2개가 맞물려 도는 것처럼 읽힌다.
+  const shapeUp = motif === "starTetraSpiral" ? makeShape("triUp", cx, cy, p.outerR, p.N) : null;
+  const shapeDown = motif === "starTetraSpiral" ? makeShape("triDown", cx, cy, p.outerR, p.N) : null;
+  // rot0을 고정값(flavor.rotBase=0)으로 둔다 — 여기에 무작위 회전을 더하면 실루엣 자체는
+  // 좌우대칭이어도 그 대칭축이 랜덤한 방향으로 기울어 보여서 "보기 좋은 좌우대칭" 인상이
+  // 깨진다. 가장 바깥(가장 크고 눈에 띄는) 층을 정확히 대칭 기준 자세로 고정해 두면, 안쪽
+  // 층들이 dTheta만큼씩 감겨 들어가며 한쪽으로 살짝 치우쳐도 전체 인상은 정돈되어 보인다.
+  const rot0 = flavor.rotBase;
+  const strokes = [];
   for (let k = 0; k < layers; k++) {
     let sc = rhythmScale(rhythm, k, layers, p.ratio);
     if (style.spacingJitter) sc *= 1 + (rng() - 0.5) * 2 * style.spacingJitter;
-    const rot = rot0 + k * dTheta;
-    let ring = ringOf(shape.polar, cx, cy, sc, rot, wave, p.N, flavor.squeeze);
-    if (style.openStroke && k % 3 === 1) ring = trimEnds(ring, 0.06 + rng() * 0.06);
+    const rot = rot0 + k * dTheta + (rotJitter ? (rng() - 0.5) * 2 * rotJitter : 0);
+    const layerShape = motif === "starTetraSpiral" ? (k % 2 === 0 ? shapeUp : shapeDown) : shape;
+    let ring = ringOf(layerShape.polar, cx, cy, sc, rot, wave, p.N, flavor.squeeze);
+    if (style.openStroke && !NEVER_OPEN_MOTIFS.has(motif) && k % 3 === 1) ring = trimEnds(ring, 0.06 + rng() * 0.06);
     strokes.push(ring);
-    layerAnchor.push([cx + Math.cos(rot) * p.outerR * sc,
-                      cy + Math.sin(rot) * p.outerR * sc * flavor.squeeze]);
-  }
-  if (motif === "latticeLog" && style.structOn) {
-    // 나선 팔을 가로지르는 현: 층 k 기준점 → 층 k+3 기준점(사고의 연결망)
-    const step = 3, chords = Math.min(5, layers - step);
-    for (let j = 0; j < chords; j++) strokes.push(lineStroke(layerAnchor[j], layerAnchor[j + step]));
   }
   return strokes;
 }
 
-// ── E 계열: 기하 8종 (무회전 중첩 + 구조선) ────────────────────────────────
+// ── [미사용] 옛 E 계열: 기하 8종 (무회전 중첩 + 구조선) — generateGlyph가 더는 호출하지 않음 ──
 function geoGlyph(motif, p, rhythm, style, flavor, rng, cx, cy) {
   const strokes = [];
   const R = p.outerR, floorR = R * MIN_RATIO;
@@ -673,14 +721,22 @@ function geoGlyph(motif, p, rhythm, style, flavor, rng, cx, cy) {
   const jit = () => (style.spacingJitter ? 1 + (rng() - 0.5) * 2 * style.spacingJitter : 1);
   const wave = style.waveBase + p.wave;
 
-  if (motif === "merkabaCommand") {
-    // ENTJ — 위/아래 삼각 교대 중첩(헥사그램 긴장) + 육각 현 + 중심 허브(한 점 금지 → floor 원).
-    for (let k = 0; k < p.layers; k++)
-      strokes.push(triangleRing(cx, cy, R * scAt(k, p.layers) * jit(), k % 2 === 0));
+  if (motif === "crystalRadiant") {
+    // ENTJ — INTJ(crystalFermat)와 같은 결정 실루엣이지만, 회전하며 안으로 감기는 대신
+    // 제자리에서 겹겹이 서서 뾰족한 끝마다 중심에서 곧게 뻗는 방사살을 더한다(외향=밖으로
+    // 뻗는 구조). 전체 크기도 10% 더 크게(outerR*1.1) 잡아 존재감을 키운다.
+    const R2 = R * 1.1;
+    const crystal = makeShape("crystal", cx, cy, R2, p.N);
+    const L = Math.min(4, Math.max(2, p.layers));
+    for (let k = 0; k < L; k++)
+      strokes.push(ringOf(crystal.polar, cx, cy, scAt(k, L) * jit(), 0, wave, p.N, 1));
     if (style.structOn) {
-      const hex = [];
-      for (let i = 0; i <= 6; i++) hex.push(polar(cx, cy, -Math.PI / 2 + (i * Math.PI) / 3, R * 0.72));
-      strokes.push(hex);
+      const m = Math.max(5, Math.min(8, Math.round(p.N / 2)));   // crystal 실루엣의 실제 대칭수와 일치
+      for (let i = 0; i < m; i++) {
+        const a = -Math.PI / 2 + (i * 2 * Math.PI) / m;
+        // 방사살이 결정 끝보다 더 밖으로 삐져나오게(R2*1.3) — 중심에서 계속 뻗어나가는 느낌.
+        strokes.push(lineStroke(polar(cx, cy, a, floorR), polar(cx, cy, a, R2 * 1.3)));
+      }
     }
     strokes.push(circlePts(cx, cy, floorR));
   } else if (motif === "sparkLattice") {
@@ -697,7 +753,8 @@ function geoGlyph(motif, p, rhythm, style, flavor, rng, cx, cy) {
     for (let j = 0; j < chords; j++) {
       // skip=2 고정(m이 작을 때 skip 3이면 현이 중심 근처를 지나 floor 규칙 위반), m≥7이면 가끔 3.
       const i = Math.floor(rng() * m), skip = m >= 7 && rng() < 0.5 ? 3 : 2;
-      strokes.push(lineStroke(tip(i, R * 0.92 * jit()), tip(i + skip, R * (0.5 + rng() * 0.35))));
+      // 바깥쪽 끝을 별 꼭짓점보다 더 밖으로(R*1.18) 빼서 중심에서 더 멀리 뻗어나가는 느낌을 준다.
+      strokes.push(lineStroke(tip(i, R * 1.18 * jit()), tip(i + skip, R * (0.5 + rng() * 0.35))));
     }
   } else if (motif === "axiomGrid") {
     // ESTJ — 정육각 중첩(0°/30° 교대 = 등축 격자감) + 방사 스포크(제도·구조).
@@ -774,15 +831,23 @@ function generateGlyph(type, V, seed, complexity = 0.7) {
   const rng = mulberry32(seed);
   const cx = 300, cy = 300;
   const spec = FAMILY[type] || FAMILY.INFP;
-  const fam = type[0] === "I" ? "spiral" : "geo";     // [1층] 내향=나선 / 외향=기하
+  // E는 I와 같은 나선 motif를 그대로 쓰되, 몰입도·사교성을 I/E 각자의 하위 구간으로
+  // 선형 매핑해서 같은 슬라이더 값에서도 I/E 크기·감김이 뚜렷이 달라 보이게 한다.
+  // (예전엔 값에 ±50 더하고 clamp했는데, 슬라이더 절반 구간이 0/100에 붙어버려
+  // 그 구간에서는 움직여도 그림이 안 바뀌는 "죽은 구간"이 생겼다 → clamp 대신
+  // 0~100 입력 전체를 하위 구간에 그대로 늘려 매핑해서 전 구간에서 항상 반응하게 함.)
+  // I: 몰입도 50~100 / 사교성 0~50(더 작고 촘촘) · E: 몰입도 0~50 / 사교성 50~100(더 크고 성글게)
+  const remap = (v, lo, hi) => lo + (v / 100) * (hi - lo);
+  const isE = type[0] === "E";
+  const V2 = isE
+    ? { ...V, focus: remap(V.focus, 0, 50), sociability: remap(V.sociability, 50, 100) }
+    : { ...V, focus: remap(V.focus, 50, 100), sociability: remap(V.sociability, 0, 50) };
   const rhythm = RHYTHM[temperamentOf(type)];
   const flavor = typeFlavor(type);
-  const style = letterStyle(type);                     // [2층]
-  const p = mapVectors(V, fam, flavor, complexity);    // [3층]
+  const style = letterStyle(type);
+  const p = mapVectors(V2, "spiral", flavor, complexity);
   p.wave = map(V.sensitivity, 0, 100, 0, style.waveSpan);
-  return fam === "spiral"
-    ? spiralGlyph(spec.motif, p, rhythm, style, flavor, rng, cx, cy)
-    : geoGlyph(spec.motif, p, rhythm, style, flavor, rng, cx, cy);
+  return spiralGlyph(spec.motif, p, rhythm, style, flavor, rng, cx, cy);
 }
 
 /* ────────────────────────────────────────────────────────────
@@ -826,10 +891,18 @@ function download(name, text, mime) {
 ════════════════════════════════════════════════════════════ */
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Gowun+Batang:wght@400;700&family=Noto+Sans+KR:wght@300;400;500;700&display=swap');
+html,body{margin:0;min-height:100%;}
 .ps-root{--bg:#0d1017;--panel:#141a22;--ink:#ece4d3;--muted:#8b93a3;--brass:#c9a24b;--line:rgba(236,228,211,.12);
-  min-height:100%;background:radial-gradient(120% 80% at 50% -10%,#151d29 0%,var(--bg) 60%);
-  color:var(--ink);font-family:'Noto Sans KR',sans-serif;-webkit-font-smoothing:antialiased;}
-.ps-wrap{max-width:820px;margin:0 auto;padding:40px 22px 64px;}
+  min-height:100vh;background:radial-gradient(120% 80% at 50% -10%,#151d29 0%,var(--bg) 60%);
+  color:var(--ink);font-family:'Noto Sans KR',sans-serif;-webkit-font-smoothing:antialiased;
+  display:flex;flex-direction:column;justify-content:center;position:relative;}
+.ps-bg-pattern{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden;}
+.ps-bg-glyph{position:absolute;left:0;will-change:transform;
+  animation-name:ps-bg-drift;animation-timing-function:linear;animation-iteration-count:infinite;}
+.ps-bg-glyph svg path{stroke:var(--brass);fill:none;}
+@keyframes ps-bg-drift{from{transform:translateX(-30vw);}to{transform:translateX(130vw);}}
+@media (prefers-reduced-motion:reduce){.ps-bg-glyph{animation:none;left:-9999px;}}
+.ps-wrap{max-width:820px;margin:0 auto;padding:40px 22px 64px;position:relative;z-index:1;width:100%;}
 .ps-eyebrow{font-size:11px;letter-spacing:.42em;text-transform:uppercase;color:var(--brass);font-weight:500;}
 .ps-title{font-family:'Gowun Batang',serif;font-weight:700;line-height:1.15;letter-spacing:-.01em;}
 .ps-serif{font-family:'Gowun Batang',serif;}
@@ -899,6 +972,47 @@ function Bar({ label, value }) {
   );
 }
 
+// 배경 장식: 실제 16종 문양 생성기(generateGlyph)로 후보 몇 개를 뽑아 반투명·다양한 크기로
+// 왼쪽→오른쪽으로 천천히 흘러가게 한다(기계적인 반복 타일 대신 이 앱 고유의 유기적인 결).
+// useMemo로 한 번만 계산(고정 seed) — 리렌더될 때마다 문양이 바뀌면 산만해짐.
+const BG_TYPES = ["INTJ", "ISTJ", "ISFJ", "INFJ", "ISFP", "INFP", "ISTP", "INTP"];
+function BgGlyphs() {
+  const items = useMemo(() => {
+    const rng = mulberry32(20260726);
+    const V = { creativity: 55, focus: 55, sociability: 55, sensitivity: 55 };
+    const n = 6;
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      const type = BG_TYPES[Math.floor(rng() * BG_TYPES.length)];
+      const seed = Math.floor(rng() * 1e9);
+      const strokes = generateGlyph(type, V, seed, 0.7);
+      const size = Math.round(120 + rng() * 300);       // 다양한 크기
+      const top = rng() * 88;                            // 세로 위치 %
+      const duration = 55 + rng() * 55;                  // 55~110초(느리게 흐름)
+      const delay = -rng() * duration;                   // 시작부터 제각각 위치에 있도록
+      const opacity = 0.11 + rng() * 0.08;                // 반투명(11~19%, 평균 ~15%)
+      out.push({ key: i, strokes, size, top, duration, delay, opacity });
+    }
+    return out;
+  }, []);
+
+  return (
+    <div className="ps-bg-pattern">
+      {items.map((it) => (
+        <div key={it.key} className="ps-bg-glyph"
+          style={{ top: `${it.top}%`, opacity: it.opacity,
+                   animationDuration: `${it.duration}s`, animationDelay: `${it.delay}s` }}>
+          <svg width={it.size} height={it.size} viewBox="0 0 600 600">
+            {it.strokes.map((s, i) => (
+              <path key={i} d={toPathD(s)} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+            ))}
+          </svg>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function PersonalitySignature() {
   const [screen, setScreen] = useState("intro"); // intro | quiz | result
   const [answers, setAnswers] = useState(Array(QUESTIONS.length).fill(null));
@@ -956,7 +1070,7 @@ export default function PersonalitySignature() {
         try {
           const r = await fetch(`${ROBOT_BRIDGE_URL}/status?job=${job_id}`);
           const j = await r.json();
-          setRobotJob({ id: job_id, state: j.state, log_tail: j.log_tail || "" });
+          setRobotJob({ id: job_id, state: j.state, log_tail: j.log_tail || "", progress: j.progress || null });
           if (j.state === "queued" || j.state === "running") setTimeout(poll, 2000);
         } catch (e) {
           setRobotJob({ id: job_id, state: "error", log_tail: String(e) });
@@ -1017,9 +1131,70 @@ export default function PersonalitySignature() {
     }
   };
 
+  // 펜 내려놓기: pen_down 모션 실행. 원위치와 같은 방식(작업 중이면 서버가 409로 거절).
+  const [penDownBusy, setPenDownBusy] = useState(false);
+  const penDownRobot = async () => {
+    setPenDownBusy(true);
+    setHomeMsg(null);
+    try {
+      const res = await fetch(`${ROBOT_BRIDGE_URL}/pen-down`, { method: "POST" });
+      const j = await res.json();
+      setHomeMsg(j.ok ? "펜 내려놓기 완료" : `펜 내려놓기 실패: ${j.message}`);
+    } catch (e) {
+      setHomeMsg(`펜 내려놓기 요청 실패: ${e}`);
+    } finally {
+      setPenDownBusy(false);
+    }
+  };
+
+  // 엔드이펙터(TCP) 오프셋 길이 실시간 표시 — 이름 대신 '길이(mm)'로 보여줘서, 컨트롤러가
+  // TCP를 조용히 리셋(pen 289mm → 플랜지 0mm)한 걸 한눈에 감지한다. 그리는 중엔 조회를
+  // 쉬어 ROS 노드 churn을 피한다. 약 10초마다 폴링.
+  const [tcpInfo, setTcpInfo] = useState(null);
+  const EXPECTED_TCP_LEN = 289;   // pen 오프셋 길이(mm)
+  useEffect(() => {
+    let alive = true;
+    const fetchTcp = async () => {
+      if (robotBusy) return;
+      try {
+        const r = await fetch(`${ROBOT_BRIDGE_URL}/tcp-info`);
+        const j = await r.json();
+        if (alive) setTcpInfo(j);
+      } catch (e) {
+        if (alive) setTcpInfo({ ok: false, error: "브릿지 연결 안 됨" });
+      }
+    };
+    fetchTcp();
+    const id = setInterval(fetchTcp, 10000);
+    return () => { alive = false; clearInterval(id); };
+  }, [robotBusy]);
+
+  const renderTcpBadge = () => {
+    if (!tcpInfo) return null;
+    if (!tcpInfo.ok) {
+      return (
+        <p className="ps-muted" style={{ fontSize: 12, textAlign: "center", marginBottom: 10 }}>
+          엔드이펙터: 조회 불가 ({tcpInfo.error || "알 수 없음"})
+        </p>
+      );
+    }
+    const len = tcpInfo.len_mm;
+    const isPen = Math.abs(len - EXPECTED_TCP_LEN) <= 12;
+    return (
+      <p style={{
+        fontSize: 12.5, textAlign: "center", marginBottom: 10, fontWeight: 600,
+        color: isPen ? "#5aa469" : "#e0663f",
+      }}>
+        엔드이펙터 오프셋 <span className="ps-mono">{len}mm</span>{" "}
+        {isPen ? "✓ pen 정상" : `⚠ pen 아님·리셋 의심 (정상 ~${EXPECTED_TCP_LEN}mm)`}
+      </p>
+    );
+  };
+
   return (
     <div className="ps-root">
       <style>{CSS}</style>
+      <BgGlyphs />
       <div className="ps-wrap">
 
         {/* ── 인트로 ── */}
@@ -1039,6 +1214,7 @@ export default function PersonalitySignature() {
 
             {/* 테스트용: 설문 없이 기존 샘플 SVG로 로봇 파이프라인만 빠르게 확인 */}
             <div style={{ marginTop: 28, paddingTop: 22, borderTop: "1px solid var(--line)" }}>
+              {renderTcpBadge()}
               {/* 로봇 안전 제어 — 테스트 중 언제든(작업 상태 무관) 누를 수 있게 항상 활성화 */}
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "center", marginBottom: 14 }}>
                 <button
@@ -1055,6 +1231,9 @@ export default function PersonalitySignature() {
                 </button>
                 <button className="ps-btn" onClick={goHomeRobot} disabled={homeBusy}>
                   {homeBusy ? "원위치 이동 중…" : "원위치"}
+                </button>
+                <button className="ps-btn" onClick={penDownRobot} disabled={penDownBusy}>
+                  {penDownBusy ? "펜 내려놓는 중…" : "펜 내려놓기"}
                 </button>
               </div>
               {homeMsg && (
@@ -1078,11 +1257,22 @@ export default function PersonalitySignature() {
                 <p className="ps-muted" style={{ fontSize: 12, marginTop: 6 }}>
                   {robotJob.state === "starting" && "브릿지 서버에 연결하는 중…"}
                   {robotJob.state === "queued" && "대기열에 등록됨…"}
-                  {robotJob.state === "running" && "pen_up → 드로잉 → pen_down → brush → grab 진행 중…"}
+                  {robotJob.state === "running" &&
+                    (robotJob.progress
+                      ? `그리는 중… ${robotJob.progress.current}/${robotJob.progress.total}획 (${robotJob.progress.percent}%)`
+                      : "pen_up → 드로잉 → pen_down → brush → grab 진행 중…")}
                   {robotJob.state === "done" && "완료! 확인해 보세요."}
-                  {robotJob.state === "error" && `실패: ${robotJob.log_tail || "알 수 없는 오류"}`}
+                  {robotJob.state === "error" && (
+                    (robotJob.log_tail || "").includes("아크릴판이 감지되지")
+                      ? "⚠ 아크릴판이 감지되지 않았습니다. 원위치로 복귀했어요. 판을 제자리에 놓고 다시 눌러주세요."
+                      : `실패: ${robotJob.log_tail || "알 수 없는 오류"}`)}
                   {robotJob.state === "stopped" && `긴급중지됨: ${robotJob.log_tail || ""}`}
                 </p>
+              )}
+              {robotJob && robotJob.state === "running" && robotJob.progress && (
+                <div className="ps-bar-track" style={{ marginTop: 6 }}>
+                  <div className="ps-bar-fill" style={{ width: `${robotJob.progress.percent}%` }} />
+                </div>
               )}
             </div>
           </div>
@@ -1189,6 +1379,7 @@ export default function PersonalitySignature() {
             </div>
 
             {/* 로봇 안전 제어 — 언제든(작업 상태 무관) 누를 수 있게 항상 활성화 */}
+            {renderTcpBadge()}
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "center", marginBottom: 10 }}>
               <button
                 onClick={estopRobot}
@@ -1204,6 +1395,9 @@ export default function PersonalitySignature() {
               </button>
               <button className="ps-btn" onClick={goHomeRobot} disabled={homeBusy}>
                 {homeBusy ? "원위치 이동 중…" : "원위치"}
+              </button>
+              <button className="ps-btn" onClick={penDownRobot} disabled={penDownBusy}>
+                {penDownBusy ? "펜 내려놓는 중…" : "펜 내려놓기"}
               </button>
             </div>
             {homeMsg && (
@@ -1229,11 +1423,22 @@ export default function PersonalitySignature() {
               <p className="ps-muted" style={{ textAlign: "center", fontSize: 12, marginTop: 14 }}>
                 {robotJob.state === "starting" && "브릿지 서버에 연결하는 중…"}
                 {robotJob.state === "queued" && "대기열에 등록됨…"}
-                {robotJob.state === "running" && "pen_up → 드로잉 → pen_down → brush → grab 진행 중…"}
+                {robotJob.state === "running" &&
+                  (robotJob.progress
+                    ? `그리는 중… ${robotJob.progress.current}/${robotJob.progress.total}획 (${robotJob.progress.percent}%)`
+                    : "pen_up → 드로잉 → pen_down → brush → grab 진행 중…")}
                 {robotJob.state === "done" && "완료! 완성된 아크릴판을 확인하세요."}
-                {robotJob.state === "error" && `실패: ${robotJob.log_tail || "알 수 없는 오류"}`}
+                {robotJob.state === "error" && (
+                  (robotJob.log_tail || "").includes("아크릴판이 감지되지")
+                    ? "⚠ 아크릴판이 감지되지 않았습니다. 원위치로 복귀했어요. 판을 제자리에 놓고 [로봇으로 그리기]를 다시 눌러주세요."
+                    : `실패: ${robotJob.log_tail || "알 수 없는 오류"}`)}
                 {robotJob.state === "stopped" && `긴급중지됨: ${robotJob.log_tail || ""}`}
               </p>
+            )}
+            {robotJob && robotJob.state === "running" && robotJob.progress && (
+              <div className="ps-bar-track" style={{ maxWidth: 300, margin: "6px auto 0" }}>
+                <div className="ps-bar-fill" style={{ width: `${robotJob.progress.percent}%` }} />
+              </div>
             )}
             <p className="ps-muted" style={{ textAlign: "center", fontSize: 11, marginTop: 20 }}>
               폴리라인 {strokes.length}획 · 로봇 JSON은 획 순서 그대로 펜다운/펜업 경로가 됩니다

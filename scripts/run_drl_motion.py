@@ -32,6 +32,7 @@ import rclpy
 import DR_init
 
 from drl_motions import DrlMotions, MOTIONS
+from tcp_check import verify_pen_tcp
 
 
 def parse_args():
@@ -177,6 +178,14 @@ def main():
             dsr_node.destroy_node()
             rclpy.shutdown()
             return
+
+    # 움직이기 전 TCP 오프셋 검증 — pen(~289mm)이 아니면(리셋 의심) 충돌 위험이라 중단.
+    ok, msg = verify_pen_tcp(dsr_node)
+    print(msg)
+    if not ok:
+        dsr_node.destroy_node()
+        rclpy.shutdown()
+        sys.exit(1)
 
     print(f"[시작] motion={args.motion} loop={args.loop} speed_scale={args.speed_scale} "
           f"robot_id={args.robot_id} model={args.model}")

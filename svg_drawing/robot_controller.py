@@ -27,6 +27,12 @@ Point = Tuple[float, float]
 Polyline = List[Point]
 
 
+class NoContactError(RuntimeError):
+    """힘제어로 긋는 중인데 표면 접촉이 감지되지 않을 때(아크릴판 미배치, 표면 Z 오차 등).
+    허공에 그리다가 계속 진행하는 것보다, 여기서 멈추고 안전 위치로 돌아가는 게 낫다."""
+    pass
+
+
 @dataclass
 class RobotConfig:
     # 용지 원점의 Base 좌표 및 축 부호
@@ -62,6 +68,21 @@ class RobotConfig:
     # 5.0→2.0: 수직→수평처럼 방향이 크게 꺾이는 코너에서 블렌드가 크면 실제 travel_height
     # 보다 살짝 더 위로 부풀어 보일 수 있어(코너 블렌딩 특성) 줄임.
     travel_blend_radius_mm: float = 2.0
+    # 획을 끝에서 이 비율만큼 더 연장해 그린다(마지막 진행 방향으로). 힘제어 지연·펜업 타이밍
+    # 때문에 획 끝이 살짝 덜 그려지는 걸 보완. 0.10 = 전체 길이의 10% 더. 0 이면 연장 안 함.
+    # 너무 크면 끝이 삐져나오거나 닫힌 도형이 과하게 겹치니 0.05~0.15 범위에서 조정.
+    draw_extend_frac: float = 0.03
+    # 같은 획을 이 횟수만큼 왕복하며 겹쳐 그린다(펜 든 채 되짚기). 1=한 번(기본), 2=왕복 1회
+    # 더 덧그림, 3=세 번 등. 선을 더 진하게/끝까지 확실히 그리고 싶을 때. 시간은 대략 횟수배.
+    draw_passes: int = 1
+    # 획 시작 이 개수만큼의 점을 느리게 긋는다(draw_vel × draw_start_slow_frac 속도).
+    # 정지→이동 전환 시 Z 힘 루프가 지연돼 초반이 뜬 채(가늘게) 그어지는 걸 완화 — 천천히
+    # 움직이면 힘제어가 접촉을 유지할 시간이 생겨 초반부터 힘이 제대로 들어간다. 0이면 끔.
+    draw_start_slow_pts: int = 6
+    draw_start_slow_frac: float = 0.4
+    # 획 끝~시작점 거리가 이 값(mm) 이하면 '닫힌 획'으로 보고, 연장 시 직선 외삽 대신
+    # 시작 경로를 따라 이어 그려(랩어라운드) 시작 부분에 겹치게 한다(닫힘 연결).
+    close_tol_mm: float = 5.0
 
     # 그리기 시작 전 이동할 안전 준비자세(joint, deg). None 이면 생략.
     # 전원 직후 로봇은 수직으로 쭉 뻗은 '특이점' 자세일 수 있는데, 특이점에서 출발하는
@@ -75,6 +96,21 @@ class RobotConfig:
     # (스크래치 품질·안전에 가장 큰 영향. 실장비에서 draw_force_n·부호는 튜닝 필요)
     use_force_control: bool = False
     draw_force_n: float = 5.0                    # 표면을 누르는 목표 힘(N)
+    # 힘제어 ON 직후 실제 목표힘까지 램프업되는 데 시간이 걸리는데, 그 전에 긋기 시작하면
+    # 초반 구간이 힘이 덜 들어간 채로 그어져 흐리게/안 그어진다. 획마다 이 시간만큼 그냥
+    # 대기한 뒤 본체를 긋는다(예전엔 순수 대기 대신 시작 몇 점을 절반속도로 긋는 식으로
+    # "대기 없이" 시간을 벌어봤는데, 실기에서 그것만으론 부족해서 결국 대기를 다시 넣음).
+    force_ramp_wait_s: float = 3.0
+    # 램프업 대기 후, 실제로 표면에 힘이 걸렸는지 확인하는 접촉 판정 임계값(N). 아크릴판을
+    # 안 놓았거나 표면 Z 가 크게 틀어지면 펜이 허공에서 목표힘에 못 미친 채(≈0N) 계속
+    # 긋게 되는데, 이 값보다 낮으면 "접촉 없음"으로 보고 그 획에서 즉시 중단·복귀한다.
+    # draw_force_n 보다 충분히 낮게(노이즈 여유) 잡아야 오탐이 안 남.
+    no_contact_force_n: float = 4.8
+    # 접촉 판정을 '한 순간'이 아니라 짧은 시간 동안 |Fz| 를 여러 번 샘플링해 중앙값으로
+    # 내린다(순간 노이즈로 힘이 잠깐 임계 밑으로 내려가도 오판 안 하도록). 아크릴이 있는데도
+    # 없다고 나오던 오탐을 줄이는 핵심. samples×interval 이 분석 시간(기본 10×0.1s=1.0초).
+    contact_check_samples: int = 10
+    contact_check_interval_s: float = 0.1
     # compliance 강성 [x,y,z,rx,ry,rz]. XY 는 딱딱하게(형태 유지), Z 는 물렁하게(힘추종).
     compliance_stiffness: List[float] = field(
         default_factory=lambda: [3000.0, 3000.0, 200.0, 200.0, 200.0, 200.0])
@@ -135,9 +171,12 @@ class RobotController:
         self._release_force: Optional[Callable] = None
         self._check_force_condition: Optional[Callable] = None
         self._get_current_posx: Optional[Callable] = None
+        self._get_tool_force: Optional[Callable] = None
         self._wait: Optional[Callable] = None
         self._DR_AXIS_Z = 2
         self._DR_FC_MOD_ABS = 0
+        # 아크릴 접촉 검사를 그리기당 '첫 획에서만' 한 번 하기 위한 플래그(execute 시작 시 리셋)
+        self._contact_verified = False
 
     # ── 로깅 헬퍼 ────────────────────────────────────────────
     def _info(self, msg: str):
@@ -162,6 +201,7 @@ class RobotController:
                 task_compliance_ctrl, release_compliance_ctrl,
                 set_stiffnessx, set_desired_force, release_force,
                 check_force_condition, get_current_posx, wait, set_ref_coord,
+                get_tool_force,
                 DR_BASE, DR_MV_MOD_ABS, DR_MV_RA_DUPLICATE,
                 DR_AXIS_Z, DR_FC_MOD_ABS,
             )
@@ -181,6 +221,7 @@ class RobotController:
         self._release_force = release_force
         self._check_force_condition = check_force_condition
         self._get_current_posx = get_current_posx
+        self._get_tool_force = get_tool_force
         self._wait = wait
         self._set_ref_coord = set_ref_coord
         self._DR_BASE = DR_BASE
@@ -239,8 +280,9 @@ class RobotController:
         self._task_compliance_ctrl()                     # 컴플라이언스 ON
         self._set_stiffnessx(self.cfg.compliance_stiffness, time=0.0)
         fz = self.cfg.force_z_sign * force_n             # 부호로 누르는 방향 결정
-        # 램프업 시간(0.3초): draw_stroke() 의 _draw_body_movel(slow_first=True) 가 시작
-        # 몇 점을 절반 속도로 그어서 이 시간만큼을 대기 없이 자연스럽게 확보한다.
+        # time=0.3: DRL 커맨드 자체의 힘 램프업 시간(이 시간에 걸쳐 목표힘까지 부드럽게 올림).
+        # 다만 실기에서는 이 0.3초가 지나도 실제로 완전히 안정(정착)되기까지 더 걸려서,
+        # draw_stroke() 에서 cfg.force_ramp_wait_s(기본 2초) 만큼 별도로 더 대기한다.
         self._set_desired_force([0.0, 0.0, fz, 0.0, 0.0, 0.0],
                                 [0, 0, 1, 0, 0, 0], time=0.3, mod=self._DR_FC_MOD_ABS)
 
@@ -250,11 +292,86 @@ class RobotController:
         self._release_force(time=0.0)
         self._release_compliance_ctrl()
 
+    def _has_contact(self) -> bool:
+        """힘제어 램프업 후, 표면에 실제로 접촉해 힘이 걸렸는지 확인한다.
+        한 순간이 아니라 짧은 시간 동안 |Fz| 를 여러 번(get_tool_force) 읽어 중앙값으로
+        판정한다 — 순간 노이즈로 힘이 잠깐 임계 밑으로 내려가도 오판(아크릴 있는데 없다고
+        하는 것)하지 않도록. 측정값은 로그로 남겨 임계값 튜닝에 참고한다.
+        판단 불가(힘 읽기 실패/예외)면 오탐 방지를 위해 접촉으로 간주하고 계속 진행한다."""
+        if self.cfg.dry_run:
+            return True
+        try:
+            n = max(1, self.cfg.contact_check_samples)
+            fz_samples = []
+            for _ in range(n):
+                f = self._get_tool_force(self._DR_BASE)   # [Fx,Fy,Fz,Tx,Ty,Tz]
+                if f and len(f) >= 3:
+                    fz_samples.append(abs(float(f[2])))
+                time.sleep(self.cfg.contact_check_interval_s)
+            if not fz_samples:
+                self._info("[robot] 힘(Fz) 읽기 실패 — 접촉으로 간주하고 계속 진행")
+                return True
+            fz_samples.sort()
+            median = fz_samples[len(fz_samples) // 2]
+            peak = fz_samples[-1]
+            contact = median >= self.cfg.no_contact_force_n
+            self._info(
+                f"[robot] 접촉 분석: |Fz| 중앙값 {median:.1f}N (최대 {peak:.1f}N, "
+                f"표본 {len(fz_samples)}개, 임계 {self.cfg.no_contact_force_n}N) "
+                f"→ {'접촉' if contact else '미접촉'}"
+            )
+            return contact
+        except Exception as e:
+            self._info(f"[robot] 접촉 판정 실패(무시하고 계속 진행): {e}")
+            return True
+
     # ── 한 획 그리기 ────────────────────────────────────────
+    def _extend_stroke(self, poly: Polyline) -> Polyline:
+        """획 끝을 draw_extend_frac(전체 길이 기준)만큼 더 그어 끝이 덜 그려지거나 폐곡선이
+        안 닫히는 걸 보완한다.
+        - 닫힌 획: '도안 자체의 시작 곡선(poly[1], poly[2]…)'을 이어 그려 시작 부분에 겹친다.
+          직선 외삽/합성 곡선이 아니라 원래 도안 경로를 그대로 연장한 거라 자연스럽게 이어지고,
+          로봇의 ~1mm 경로 오차로 생기는 시작/끝 틈을 겹쳐서 덮는다.
+        - 열린 획: 마지막 진행 방향으로 직선 외삽."""
+        frac = self.cfg.draw_extend_frac
+        if frac <= 0 or len(poly) < 3:
+            return poly
+        total = 0.0
+        for (ax, ay), (bx, by) in zip(poly, poly[1:]):
+            total += math.hypot(bx - ax, by - ay)
+        if total <= 0:
+            return poly
+        ext = total * frac
+
+        (p0x, p0y), (pnx, pny) = poly[0], poly[-1]
+        gap = math.hypot(pnx - p0x, pny - p0y)
+        # 닫힘 판정: 끝~시작 거리가 절대 기준(close_tol_mm) 또는 획 길이의 20% 이하면 닫힘.
+        closed = gap <= max(self.cfg.close_tol_mm, 0.20 * total)
+        if closed:
+            # 도안의 시작 경로를 ext 길이만큼 이어 그림 → 시작 부분에 자연스럽게 겹침.
+            out = list(poly)
+            acc = 0.0
+            prev = poly[-1]
+            for pt in poly[1:]:
+                acc += math.hypot(pt[0] - prev[0], pt[1] - prev[1])
+                out.append(pt)
+                prev = pt
+                if acc >= ext:
+                    break
+            return out
+        # 열린 획: 마지막 진행 방향으로 직선 외삽
+        (px, py), (qx, qy) = poly[-2], poly[-1]
+        dx, dy = qx - px, qy - py
+        d = math.hypot(dx, dy)
+        if d < 1e-9:
+            return poly
+        return list(poly) + [(qx + dx / d * ext, qy + dy / d * ext)]
+
     def draw_stroke(self, poly: Polyline):
         if len(poly) < 2:
             return
         c = self.cfg
+        poly = self._extend_stroke(poly)   # 끝에서 draw_extend_frac 만큼 더 그리도록 연장
         sx, sy = poly[0]
 
         # 1) 시작점 위(travel) → 접근(approach)  : 펜업 속도(위치제어)
@@ -274,10 +391,34 @@ class RobotController:
             self._movel_to(sx, sy, c.draw_height_mm)
             # 2) 그 지점부터 Z 힘제어 ON — Z강성이 낮아(예:20) 위치 영향 최소, 힘이 지배해야 함
             self._enable_z_force(c.draw_force_n)
-            # [삭제] 예전엔 여기서 time.sleep(0.3) 으로 힘 램프업을 기다렸는데, 획이 많은
-            # 도안에서 순수 대기시간이 누적돼 너무 느려짐. 완전히 기다리지 않는 대신, 아래
-            # _draw_body_movel(slow_first=True) 가 시작 몇 점만 절반 속도로 그어서 "어차피
-            # 움직여야 하는 시간"을 램프업에 자연스럽게 써먹는다(순수 대기보다 훨씬 저렴).
+            # [한때 삭제했다가 복원] 시작 몇 점을 절반속도로 그어 "대기 없이" 램프업 시간을
+            # 버는 방식을 써봤는데, 실기에서 그것만으론 힘이 덜 들어간 채로 초반 구간이
+            # 흐리게/안 그어지는 문제가 있었다 → 결국 힘이 완전히 들어갈 때까지 그냥 대기.
+            time.sleep(c.force_ramp_wait_s)
+            # 2.5) 접촉 확인 — 아크릴 유무는 그리기 시작 전에 정해지는 조건이라 '첫 획에서만'
+            # 한 번 검사한다(매 획 검사하면 획당 ~3초씩 붙어 너무 느림). 아크릴판을 안 놓았거나
+            # 표면 Z 가 크게 틀어지면 램프업 후에도 목표힘에 못 미친 채(≈0N, 허공) 남는데, 그때
+            # 그리기를 중단하고 원위치로 복귀한다. (도중에 판이 빠지는 경우는 감지 못 함 — 트레이드오프)
+            if not self._contact_verified:
+                if not self._has_contact():
+                    self._info(
+                        f"[에러] 표면 접촉 미감지(목표 {c.draw_force_n}N, 임계 {c.no_contact_force_n}N "
+                        f"미만) — 아크릴판이 없거나 표면 높이가 잘못됐을 수 있습니다. "
+                        f"그리기를 중단하고 원위치로 복귀합니다."
+                    )
+                    self._disable_z_force()
+                    self._use_travel_speed()
+                    self._movel_to(sx, sy, c.travel_height_mm, radius=c.travel_blend_radius_mm)
+                    if c.ready_joints_deg:
+                        self._movej(self._posj(*c.ready_joints_deg),
+                                   vel=30.0, acc=30.0, ra=self._DR_MV_RA_DUPLICATE)
+                    self._info("[안내] 원위치 복귀 완료. 아크릴판을 제자리에 놓고 "
+                               "'로봇으로 그리기'를 다시 눌러주세요.")
+                    raise NoContactError(
+                        "아크릴판이 감지되지 않았습니다. 판을 제자리에 놓고 '로봇으로 그리기'를 "
+                        "다시 눌러주세요."
+                    )
+                self._contact_verified = True   # 첫 획 접촉 확인됨 → 이후 획은 검사 생략
             # 3) 본체는 point-by-point movel 로 긋는다.
             #    [되돌림] 한때 movesx(스플라인)로 바꿨었다 — per-point movel 의 가감속이 힘 추정에
             #    노이즈를 준다는 이유였는데, movesx 는 task_compliance_ctrl/set_desired_force 와
@@ -287,8 +428,9 @@ class RobotController:
             # try/finally: _draw_body_movel 중 예외가 나도 컴플라이언스를 반드시 끈다.
             # (전엔 여기서 죽으면 힘제어가 로봇에 켜진 채로 남아, 다음 실행이 그 위에서
             # 시작돼 갈수록 이상해지는/느려지는 문제가 있었다)
+            lx, ly = poly[-1]
             try:
-                self._draw_body_movel(poly, slow_first=True)
+                lx, ly = self._draw_body_passes(poly)   # draw_passes 회 왕복 덧그림
             finally:
                 self._disable_z_force()
         else:
@@ -296,17 +438,30 @@ class RobotController:
             self._movel_to(sx, sy, c.draw_height_mm)
             if c.stroke_mode == "movesx":
                 self._draw_body_movesx(poly)
+                lx, ly = poly[-1]
             else:
-                self._draw_body_movel(poly)
+                lx, ly = self._draw_body_passes(poly)
 
-        # 3) 펜업(travel_height 상승) : 마지막 점 위로. blend radius 를 줘서 다음 획
-        #    시작부의 travel_height 수평이동과 완전정지 없이 이어지게 한다("두 번 뜨는" 현상 방지).
-        lx, ly = poly[-1]
+        # 3) 펜업(travel_height 상승) : 펜이 실제로 끝난 지점 위로(왕복 횟수가 짝수면 시작점,
+        #    홀수면 끝점). blend radius 를 줘서 다음 획 시작부 수평이동과 완전정지 없이 이어진다.
         self._use_travel_speed()
         self._movel_to(lx, ly, c.travel_height_mm, radius=c.travel_blend_radius_mm)
 
+    def _draw_body_passes(self, poly: Polyline) -> Point:
+        """같은 획을 draw_passes 회 '왕복'하며 겹쳐 긋는다(펜 든 채 되짚기).
+        한 번 긋고, 펜을 안 떼고 역방향으로 되짚고, 다시 정방향… 반복.
+        같은 선을 여러 번 덧그어 더 진하고 끝까지 확실히 그려진다.
+        반환: 마지막 패스가 끝난 지점(펜 현재 위치) — 짝수 패스면 시작점, 홀수면 끝점."""
+        passes = max(1, self.cfg.draw_passes)
+        cur = poly
+        for k in range(passes):
+            self._draw_body_movel(cur)     # cur[1:] 를 그림(첫 점은 현재 펜 위치라 생략)
+            if k < passes - 1:
+                cur = cur[::-1]            # 다음 패스는 역방향으로 되짚기
+        return cur[-1]
+
     def _draw_body_movel(self, poly: Polyline, include_first: bool = False,
-                         z_override: Optional[float] = None, slow_first: bool = False):
+                         z_override: Optional[float] = None):
         # 두 모드 모두 draw_stroke 에서 첫 점을 draw_height 로 이미 접촉시켰으므로
         # 기본은 poly[1:] 만 긋는다. include_first=True 는 첫 점부터 다시 긋고 싶을 때만.
         # z_override 를 주면(힘제어) 그 Z 를 목표로 긋는다(표면보다 살짝 아래 → 힘이 4N 유지).
@@ -314,20 +469,22 @@ class RobotController:
         z = self.cfg.draw_height_mm if z_override is None else z_override
         pts = poly if include_first else poly[1:]
 
-        if slow_first and pts and not self.cfg.dry_run:
-            # 힘 램프업을 별도 대기 없이 "벌기" 위해, 시작 몇 점만 절반 속도로 긋는다.
-            # 샘플 간격이 0.5mm라 점 1개만으론 시간이 너무 적으니(대기 대체 효과 없음)
-            # 여러 점(N_SLOW_FIRST)을 묶어서 확보한다.
-            N_SLOW_FIRST = 6
-            slow_pts, pts = pts[:N_SLOW_FIRST], pts[N_SLOW_FIRST:]
-            self._set_velx(self.cfg.draw_vel_mm_s * 0.5, self.cfg.move_rot_vel_deg_s)
+        n = len(pts)
+        # 시작 몇 점은 느리게 — 정지→이동 전환 시 힘 루프 지연으로 초반이 뜬 채(가늘게)
+        # 그어지는 것 완화. 그 구간이 끝나면 정상 속도로 복귀.
+        slow_n = 0 if self.cfg.dry_run else min(self.cfg.draw_start_slow_pts, n)
+        if slow_n > 0:
+            self._set_velx(self.cfg.draw_vel_mm_s * self.cfg.draw_start_slow_frac,
+                           self.cfg.move_rot_vel_deg_s)
             self._set_accx(self.cfg.draw_acc_mm_s2, self.cfg.move_rot_acc_deg_s2)
-            for (px, py) in slow_pts:
-                self._movel_to(px, py, z, radius=r)
-            self._use_draw_speed()   # 나머지는 정상 속도로 복귀
-
-        for (px, py) in pts:
-            self._movel_to(px, py, z, radius=r)
+        for i, (px, py) in enumerate(pts):
+            if slow_n and i == slow_n:
+                self._use_draw_speed()   # 느린 시작 구간 끝 → 정상 속도
+            # 마지막 점은 radius=0 으로 '정확히' 찍는다. blend radius 를 마지막 점까지 주면
+            # 코너를 잘라 끝점 ~1.5mm 앞에서 펜업이 시작돼 획이 짧아지고(닫힌 도형이 안 닫혀
+            # 시작점과 ~2mm 벌어짐). 중간 점은 그대로 blend 유지(부드러움·속도).
+            radius = 0.0 if i == n - 1 else r
+            self._movel_to(px, py, z, radius=radius)
 
     def _draw_body_movesx(self, poly: Polyline):
         """스트로크를 movesx(스플라인)로 chunk 단위로 그린다(빠름)."""
@@ -420,6 +577,7 @@ class RobotController:
     # ── 전체 실행 ───────────────────────────────────────────
     def execute(self, strokes: List[Polyline]) -> DrawStats:
         self.connect()
+        self._contact_verified = False   # 이번 그리기의 첫 획에서 접촉 1회 검사하도록 리셋
         stats = self._compute_stats(strokes)
 
         self._info(
@@ -443,8 +601,11 @@ class RobotController:
 
         for idx, poly in enumerate(strokes):
             self.draw_stroke(poly)
-            if (idx + 1) % 20 == 0:
-                self._info(f"[robot] 진행 {idx + 1}/{stats.strokes} 획")
+            # 획마다 매번 찍는다(예전엔 20획마다였는데, 성향 시그니처는 보통 7~25획이라
+            # 20 문턱을 넘는 경우가 거의 없어 진행률이 사실상 안 보였다). gui_bridge_server가
+            # 이 줄을 파싱해 GUI에 진행률(%)로 보여준다 — 형식 바꾸면 그쪽 정규식도 같이 수정.
+            pct = round((idx + 1) / stats.strokes * 100) if stats.strokes else 100
+            self._info(f"[진행] {idx + 1}/{stats.strokes}획 ({pct}%)")
 
         # 종료 시 travel 높이로 상승
         if strokes and not self.cfg.dry_run:

@@ -81,6 +81,19 @@ class DrlMotions:
         self._set_digital_output(4, 0)
         self._wait(1.0)
 
+    def _grab_release_5mm(self):
+        # grab 마지막 '놓기' 전용 — 폭 ~5mm 로 놓는다.
+        # [2026-07-27] DO4·DO5 신호선은 그리퍼에 미배선(1~3번만 동작)이라 단일 채널로는 못 씀.
+        # 대신 WebLogic 에 rule #4 를 입력조합 IN1=1 AND IN2=1(1 1 0 0…) → Width 5mm 로 등록하고,
+        # 여기서 DO1·DO2 를 동시에 1로 켜서 그 룰을 트리거한다(작동하는 라인만 조합 → 배선 불필요).
+        # ※ 실제 폭 5mm 는 WebLogic rule #4 의 Width 값으로 결정됨(코드가 아니라).
+        self._set_digital_output(1, 1)
+        self._set_digital_output(2, 1)
+        self._set_digital_output(3, 0)
+        self._set_digital_output(4, 0)
+        self._set_digital_output(5, 0)
+        # 내부 대기 없음 — 놓은 후 대기는 grab_motion 에서 명시적으로 준다(정확한 시간 제어).
+
     # ── m0609_pen_down/pen_up/brush.drl 공용 grasp/release (핀 2/3 조합) ──
     def _pen_grasp(self):
         self._set_digital_output(4, 0)
@@ -129,8 +142,9 @@ class DrlMotions:
         self._movel_p(671.79, -9.29, 289.04, 176.94, -149.03, -177.02, radius=R)
         self._movel_p(646.01, -5.50, 317.03, 178.27, -128.91, -176.37, radius=R)
         self._movel_p(718.34, -23.29, 253.96, 177.99, -100.50, -175.89)
-        self._wait(2.0)
-        self._grab_release()
+        self._wait(1.0)   # 놓기 전 대기 1초(그 자리에 멈춰 대기)
+        self._grab_release_5mm()   # 마지막 놓기: 폭 ~5mm(DO1+DO2=1100 조합, WebLogic rule #4)로 놓음
+        self._wait(5.0)   # 놓은 후 자세 유지하며 대기 5초(그 자리에 멈춰 대기)
         self._movej_p(0.00, 0.00, 90.00, 0.00, 90.00, 0.00)
 
     # ── m0609_pen_down.drl ──
@@ -154,7 +168,7 @@ class DrlMotions:
         self._movej_p(-0.02, -0.05, 90.15, 0.01, 89.22, 0.04)
         self._pen_release()
         self._movel_p(313.84, -283.52, 72.12, 89.87, -136.08, 91.85)
-        self._wait(2.0)
+        self._wait(1.0)  # 집기 전 자세 안정 대기 2→1초로 단축
         self._pen_grasp()
         self._wait(1.0)  # 원본 DRL엔 없음: grasp 직후 바로 movel 이 시작돼 그리퍼가
                           # 물리적으로 닫히기 전에 팔이 먼저 올라가는 문제 방지(좌표는 그대로)
@@ -185,10 +199,10 @@ class DrlMotions:
         self._movel_p(341.66, 205.55, 145.42, 87.89, -176.72, 88.20, radius=R)
         self._movel_p(390.06, 15.52, 92.44, 88.90, -176.62, 89.22, radius=R)
         self._movel_p(388.46, 14.55, 51.10, 86.98, -176.65, 87.15, radius=R)
-        # 다음 점(390.19,214.41,132.73)이 원본 DRL에 그대로 중복돼 있어(거리 0) 블렌드
-        # 대상이 아님 — 이 점만 radius=0.
-        self._movel_p(390.19, 214.41, 32.73, 87.52, -176.78, 87.47)
-        self._movel_p(390.19, 214.41, 132.73, 87.52, -176.78, 87.47)
+        # [2026-07-27] 원본 DRL에 위쪽 점(390.19,214.41,132.73)이 두 번 중복돼 있어(거리 0)
+        # 블렌드를 못 걸고 radius=0(완전정지)+거리0 이동을 하느라 3번째 브러시만 멈칫했다.
+        # → 중복 한 줄 제거하고 다른 브러시처럼 블렌드(radius=R)로 통일해 부드럽게 넘어가게 함.
+        self._movel_p(390.19, 214.41, 32.73, 87.52, -176.78, 87.47, radius=R)
         self._movel_p(390.19, 214.41, 132.73, 87.52, -176.78, 87.47, radius=R)
         self._movel_p(421.21, 33.31, 85.66, 93.36, -176.62, 93.75, radius=R)
         self._movel_p(420.66, 32.68, 35.98, 91.43, -176.70, 91.69, radius=R)

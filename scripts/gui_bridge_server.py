@@ -13,10 +13,14 @@ HTTP POST → 서버가 run_signature_sequence.py를 실행하는 다리 역할.
                             → run_signature_sequence.py를 백그라운드로 실행, {job_id} 반환
     POST /draw-sample      body: {"sample": "square"|"hex_spiral"}
                             → samples/ 의 기존 SVG를 변환 없이 그대로 그림(설문 없이 빠른 테스트용)
-    GET  /status?job=<id>  → {state: queued|running|done|error|stopped, log_tail: "..."}
+    GET  /status?job=<id>  → {state: queued|running|done|error|stopped, log_tail: "...",
+                            progress: {current, total, percent} | null}
     POST /estop             → ① emergency_stop.py로 로봇에 정지 명령 즉시 전송
                               ② 실행 중인 시퀀스 프로세스(자식 포함) 전체 종료(다음 단계로 못 넘어가게)
     POST /go-home           → go_home.py로 준비자세 복귀(다른 작업 실행 중이면 거절)
+    POST /pen-down          → run_drl_motion.py --motion pen_down 실행(펜 내려놓기)
+    GET  /tcp-info          → 현재 활성 TCP 오프셋 길이(mm) 등 {ok,name,len_mm,dz_mm,tcp_z}
+                             (이름 대신 '길이'로 보여줘서 TCP 리셋을 GUI에서 감지)
     GET  /health            → {status: "ok"}
 
 CORS: 다른 포트(React dev server)에서 fetch할 수 있게 모든 origin 허용.
@@ -31,6 +35,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -55,7 +60,7 @@ CURRENT_JOB_ID: list = [None]     # 가장 최근/실행 중인 job — /estop �
 # 안전 리셋: 컨트롤러 재기동 후 누적 상승시켜둔 배율이 그대로(클램핑 없이) 적용돼
 # 위험하게 빨라지는 게 실기에서 확인됨 → 전부 원본 DRL 속도(1.0)로 되돌림.
 CONFIG = {'plate_size_mm': 112.5,
-         'pen_up_speed': 0.595, 'pen_down_speed': 0.595, 'brush_speed': 0.6375, 'grab_speed': 0.85}
+         'pen_up_speed': 0.506, 'pen_down_speed': 0.595, 'brush_speed': 0.6375, 'grab_speed': 0.85}
 
 
 def _run_job(job_id: str, strokes_json_path: str = None, svg_path: str = None):
@@ -163,6 +168,29 @@ def _go_home() -> dict:
         return {'ok': False, 'message': f'원위치 실패: {e}'}
 
 
+def _pen_down() -> dict:
+    """펜 내려놓기(pen_down) 모션 실행. 그리기 시퀀스가 돌고 있으면(로봇 충돌 방지)
+    거절 — 먼저 /estop 후 호출. run_drl_motion.py --motion pen_down 를 --yes 로 실행."""
+    job_id = CURRENT_JOB_ID[0]
+    if job_id:
+        with JOBS_LOCK:
+            job = JOBS.get(job_id)
+            busy = job and job['state'] in ('queued', 'running')
+        if busy:
+            return {'ok': False,
+                   'message': '다른 작업이 실행 중입니다. 먼저 긴급중지 후 시도하세요.'}
+    try:
+        proc = subprocess.run(
+            [sys.executable, os.path.join(SCRIPT_DIR, 'run_drl_motion.py'),
+             '--motion', 'pen_down', '--speed-scale', str(CONFIG['pen_down_speed']),
+             '--yes'],
+            cwd=SCRIPT_DIR, capture_output=True, text=True, timeout=120)
+        return {'ok': proc.returncode == 0,
+               'message': (proc.stdout or proc.stderr).strip()[-300:]}
+    except Exception as e:
+        return {'ok': False, 'message': f'펜 내려놓기 실패: {e}'}
+
+
 class Handler(BaseHTTPRequestHandler):
     def _cors(self):
         self.send_header('Access-Control-Allow-Origin', '*')
@@ -200,7 +228,28 @@ class Handler(BaseHTTPRequestHandler):
             if lp and os.path.isfile(lp):
                 with open(lp, encoding='utf-8', errors='replace') as f:
                     log_tail = ''.join(f.readlines()[-40:])
-            self._json(200, {'state': job['state'], 'log_tail': log_tail})
+            # robot_controller.py의 draw_all()이 획마다 "[진행] N/M획 (P%)"를 stdout에
+            # 찍는다 — 로그 tail에서 가장 최근 줄을 찾아 GUI 진행률 표시에 쓴다.
+            progress = None
+            matches = re.findall(r'\[진행\]\s*(\d+)/(\d+)획\s*\((\d+)%\)', log_tail)
+            if matches:
+                cur, total, pct = matches[-1]
+                progress = {'current': int(cur), 'total': int(total), 'percent': int(pct)}
+            self._json(200, {'state': job['state'], 'log_tail': log_tail, 'progress': progress})
+            return
+        if parsed.path == '/tcp-info':
+            # 현재 활성 TCP의 오프셋 길이(mm)를 tcp_info.py로 조회해 그대로 넘긴다.
+            # (이름만으론 안 드러나는 TCP 리셋을, 길이 289→0 변화로 GUI에서 감지하려는 용도)
+            try:
+                proc = subprocess.run(
+                    [sys.executable, os.path.join(SCRIPT_DIR, 'tcp_info.py')],
+                    cwd=SCRIPT_DIR, capture_output=True, text=True, timeout=12)
+                # 마지막 비어있지 않은 줄이 JSON(앞줄에 드라이버 배너가 섞일 수 있음)
+                lines = [ln for ln in proc.stdout.splitlines() if ln.strip()]
+                info = json.loads(lines[-1]) if lines else {'ok': False, 'error': '출력 없음'}
+            except Exception as e:
+                info = {'ok': False, 'error': f'tcp_info 실행 실패: {e}'}
+            self._json(200, info)
             return
         self._json(404, {'error': 'not found'})
 
@@ -211,6 +260,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == '/go-home':
             result = _go_home()
+            self._json(200 if result['ok'] else 409, result)
+            return
+        if self.path == '/pen-down':
+            result = _pen_down()
             self._json(200 if result['ok'] else 409, result)
             return
         if self.path == '/draw-sample':
@@ -271,8 +324,8 @@ def main():
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--port', type=int, default=8787)
     ap.add_argument('--plate-size-mm', type=float, default=112.5)
-    ap.add_argument('--pen-up-speed', type=float, default=0.595,
-                    help='pen_up 속도 배율. 기본 0.595(0.7에서 -15%%)')
+    ap.add_argument('--pen-up-speed', type=float, default=0.506,
+                    help='pen_up 속도 배율. 기본 0.506(0.7→0.595에서 추가 -15%%)')
     ap.add_argument('--pen-down-speed', type=float, default=0.595,
                     help='pen_down 속도 배율. 기본 0.595(0.7에서 -15%%)')
     ap.add_argument('--brush-speed', type=float, default=0.6375,

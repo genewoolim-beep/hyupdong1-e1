@@ -34,8 +34,29 @@ import time
 import rclpy
 import DR_init
 
+from svg_drawing.robot_controller import NoContactError
+from tcp_check import verify_pen_tcp, TcpMismatchError
+
 DEFAULT_SVG = os.path.expanduser(
     '~/ws_cobot_pjt/ws_dsr/src/svg_drawing/samples/octagon_spiral.svg')
+
+
+def rotate_polys(polys, cx: float, cy: float, deg: float):
+    """용지mm 폴리라인들을 (cx,cy) 중심으로 deg(도)만큼 회전.
+    deg 는 '위에서 내려다봤을 때 반시계방향'이 +다. 용지mm 좌표는 y가 아래로
+    증가하므로(화면과 동일), 수식상으로는 -deg 를 표준 회전행렬에 넣어야
+    맞다(y축이 뒤집힌 만큼 회전 방향이 수식에서는 반대로 나타남)."""
+    if not deg:
+        return polys
+    import math
+    th = math.radians(-deg)
+    c, s = math.cos(th), math.sin(th)
+
+    def rot_pt(p):
+        x, y = p[0] - cx, p[1] - cy
+        return (cx + x * c - y * s, cy + x * s + y * c)
+
+    return [[rot_pt(p) for p in poly] for poly in polys]
 
 
 def parse_args():
@@ -50,8 +71,9 @@ def parse_args():
     ap.add_argument('--start-z', type=float, default=340.0,
                     help='홈에서 이 Base Z(mm)까지 적당한 속도로 먼저 이동 후 키보드 미세조정. '
                          '기본 340mm(표면 74~100보다 훨씬 위라 안전). 블라인드 이동 끄려면 큰 값(예: 9999)')
-    ap.add_argument('--surface-z', type=float, default=10.0,
-                    help='표면 Z(mm). 기본 10.0mm — 대화형 하강(Enter/step/키보드) 전부 생략하고 '
+    ap.add_argument('--surface-z', type=float, default=9.5,
+                    help='표면 Z(mm). 기본 9.5mm(10.0에서 0.5mm 낮춤 — 초반부터 더 눌러 힘이 빨리 붙게). '
+                         '대화형 하강(Enter/step/키보드) 전부 생략하고 '
                          '홈에서 바로 이 높이로 이동해 표면으로 확정, 곧장 그리기 시작. '
                          '⚠ 검증 없이 그대로 내려가니 값이 틀리면 위험(펜 박힘/뜸). '
                          '표면이 달라졌으면 --surface-z 로 새 값을, 대화형으로 다시 잡으려면 --no-auto-z')
@@ -75,6 +97,11 @@ def parse_args():
     ap.add_argument('--size', type=float, default=218.75,
                     help='그림이 들어갈 정사각 작업영역 한 변(mm). 홈 XY 중심에 배치. '
                          '기본 218.75(175에서 +25%)')
+    ap.add_argument('--rotate-deg', type=float, default=90.0,
+                    help='도안을 작업영역 중심 기준으로 이 각도(도)만큼 회전(위에서 봤을 때 '
+                         '반시계방향이 +). 기본 90 — 도안의 6시 방향(아래쪽)이 로봇쪽을 향하게 '
+                         '맞춘 값(회전 전엔 6시가 로봇 오른쪽을 향했음). 결과가 여전히 어긋나면 '
+                         '180/−90/0 등으로 바꿔서 실측 확인')
     ap.add_argument('--pen-up', type=float, default=15.0,
                     help='획 사이 펜업 높이(표면 위 mm)')
     ap.add_argument('--off-x', type=float, default=0.0,
@@ -92,17 +119,27 @@ def parse_args():
                     help='아크릴을 누르는 목표 힘(N). 기본 5.5N. --force 로 켜면 이 힘으로 Fz 유지')
     ap.add_argument('--force-sign', type=float, default=-1.0,
                     help='누르는 방향 부호. -1=Base -Z(아래로). 설치 자세에 맞춰 조정')
-    ap.add_argument('--stiffness-z', type=float, default=20.0,
+    ap.add_argument('--stiffness-z', type=float, default=5.0,
                     help='힘제어 Z 강성(N/m). 낮을수록 Z 위치제어가 약해지고 힘제어가 우선(=표면추종). '
-                         '기본 20(힘 우선). 튀면 올리기(30~100), 위치 우선 원하면 크게(1000+). XY 는 3000 고정')
+                         '기본 5(20→10→5로 낮춤: 표면 기울기 있어도 힘 균일하게, 힘 우선 강화). '
+                         '튀면 올리기(20~100), 위치 우선 원하면 크게(1000+). XY 는 3000 고정')
     ap.add_argument('--draw-vel', type=float, default=None,
-                    help='그리기 속도(mm/s). 미지정 시 힘제어=8, 위치제어=31.35. 표면 울퉁불퉁하면 '
+                    help='그리기 속도(mm/s). 미지정 시 힘제어=20.64, 위치제어=37.62. 표면 울퉁불퉁하면 '
                          '힘제어에서 더 낮추기(예: 5). 힘 루프가 요철 따라가려면 느려야 함')
     ap.add_argument('--draw-acc', type=float, default=None,
-                    help='그리기 가속도(mm/s^2). 미지정 시 힘제어=40, 위치제어=150')
+                    help='그리기 가속도(mm/s^2). 미지정 시 힘제어=78.54, 위치제어=150')
     ap.add_argument('--force-push-mm', type=float, default=0.0,
                     help='(힘제어) 획 본체 Z 목표를 표면보다 이만큼 아래로 둠. 기본 0(힘 우선). '
                          '0보다 크면 위치오차를 만들어 힘제어 우선을 해침. 힘 우선은 --stiffness-z 를 낮춰 구현')
+    ap.add_argument('--force-ramp-wait', type=float, default=3.0,
+                    help='(힘제어) 힘제어 ON 직후 목표힘까지 안정될 때까지 긋기 전에 대기하는 시간(초). '
+                         '기본 3.0초(2→3로 늘림: 초반 힘 부족 완화). 짧으면 각 획 초반이 힘이 덜 들어간 채로 흐리게 그어짐')
+    ap.add_argument('--draw-extend', type=float, default=0.03,
+                    help='각 획을 끝에서 이 비율만큼 더 연장해 그린다(0.03=3%%). 힘제어 지연/펜업 '
+                         '타이밍으로 획 끝이 덜 그려지는 것 보완. 삐져나오면 낮추고(0.05), 부족하면 올리기(0.15)')
+    ap.add_argument('--draw-passes', type=int, default=1,
+                    help='같은 획을 이 횟수만큼 왕복하며 겹쳐 그린다(펜 든 채 되짚기). 1=한 번(기본), '
+                         '2=왕복 1회 더, 3=세 번. 선을 더 진하게/끝까지 확실히. 시간은 대략 횟수배로 증가')
     ap.add_argument('--tcp', default=None,
                     help='펜던트에 등록된 TCP 이름으로 강제 선택(예: --tcp pen). 미지정 시 건드리지 않고 '
                          '현재 활성 TCP 이름만 출력. 실행마다 홈 Z/자세가 널뛰면(TCP 가 바뀐 것) 이걸로 고정하세요')
@@ -347,6 +384,7 @@ def draw_svg_at_surface(args, surface_z: float, home):
     res_mm = 2.0
     max_seg = res_mm / mapper.scale if mapper.scale > 0 else res_mm
     paper_polys = mapper.map_strokes(sample_paths(parsed.strokes, max_seg))
+    paper_polys = rotate_polys(paper_polys, size / 2.0, size / 2.0, args.rotate_deg)
     ordered = optimize(paper_polys, start=(0.0, 0.0))
     print(f"  획 {len(ordered)}개, 매핑 {mapper.describe()}")
 
@@ -365,25 +403,36 @@ def draw_svg_at_surface(args, surface_z: float, home):
         approach_height_mm=surface_z + 5.0,       # 시작점 위 접근
         travel_height_mm=surface_z + args.pen_up, # 획 사이 펜업(작게)
         tool_rx_deg=rx, tool_ry_deg=ry, tool_rz_deg=rz,   # 현재 자세 유지
-        # 15.64→17.2mm/s(+10%), 가속도도 같이 +10%(59.5→65.45).
+        # 15.64→17.2mm/s(+10%)→20.64mm/s(+20%), 가속도도 같이 +20%(65.45→78.54).
         draw_vel_mm_s=(args.draw_vel if args.draw_vel is not None
-                       else (17.2 if args.force else 37.62)),
+                       else (20.64 if args.force else 37.62)),
         draw_acc_mm_s2=(args.draw_acc if args.draw_acc is not None
-                        else (65.45 if args.force else 150.0)),
+                        else (78.54 if args.force else 150.0)),
         # 획 사이 이동(펜업 상태) 60/300→51/255(-15%)로 같이 낮춤.
         travel_vel_mm_s=51.0, travel_acc_mm_s2=255.0,
         # 각 점에서 완전정지("차큰차큰")하지 않도록 blend radius 부여 → 이어서 부드럽게 통과.
-        # 샘플 간격(2.0mm)의 절반 미만이어야 안전(코너 잘림 방지)하므로 0.8mm.
-        draw_blend_radius_mm=0.8,
+        # 0.8→1.5mm(+87.5%): 곡선에서 코너마다 크게 느려지는 문제 완화(직선은 이미 방향
+        # 전환이 없어 blend radius 와 무관하게 목표속도까지 감). 샘플 간격(2.0mm)보다는
+        # 여전히 작게 유지해 코너가 심하게 뭉개지진 않게 함(그래도 0.8mm보다는 살짝 둥글어짐).
+        draw_blend_radius_mm=1.5,
+        draw_extend_frac=args.draw_extend,   # 획을 끝에서 이만큼 더 연장(끝이 덜 그려지는 것 보완)
+        draw_passes=args.draw_passes,        # 같은 획 왕복 겹쳐그리기 횟수
         # 힘제어: --force 면 설정 높이(surface_z)로 정확히 내려간 뒤 그 지점에서
         # 일정 힘으로 눌러 아크릴을 긁는다. XY 는 위치제어(형태 유지), Z 만 힘추종.
         use_force_control=args.force,
         draw_force_n=args.force_n,
         force_z_sign=args.force_sign,
         force_push_mm=args.force_push_mm,
-        # XY 는 딱딱(3000)하게 형태 유지, Z 는 --stiffness-z 로 조절(높을수록 덜 파고듦)
-        compliance_stiffness=[3000.0, 3000.0, args.stiffness_z, 200.0, 200.0, 200.0],
-        ready_joints_deg=None,                    # 이미 준비자세 → 재이동 생략
+        force_ramp_wait_s=args.force_ramp_wait,
+        # XY 병진 딱딱(3000, 형태 유지), Z 병진만 --stiffness-z 로 물렁(힘제어).
+        # 회전(Rx·Ry·Rz) 200→1000→3000: 긴 펜(289mm)이 끌림 토크에 기울면 펜 팁 XY가 크게
+        # 흔들려(지렛대 증폭) 시작/끝 위치가 어긋남 → 회전을 XY와 같은 3000으로 완전히 딱딱하게
+        # 잡아 툴 기울기(→팁 흔들림)를 최대한 억제. Z만 물렁하게 두어 힘제어는 그대로.
+        compliance_stiffness=[3000.0, 3000.0, args.stiffness_z, 3000.0, 3000.0, 3000.0],
+        # 준비자세(원위치) 관절각. 그리기 시작 전 특이점 회피용이자, 아크릴 미접촉으로
+        # 중단(NoContactError)될 때 "원위치로 복귀"하는 목표 자세로도 쓰인다. pen_up 이
+        # 이미 이 자세로 끝나 시작 movej 는 사실상 제자리(빠름)라 둬도 부담 없다.
+        ready_joints_deg=[0.0, 0.0, 90.0, 0.0, 90.0, 0.0],
         dry_run=False,
     )
 
@@ -411,6 +460,12 @@ def draw_svg_at_surface(args, surface_z: float, home):
         time.sleep(1.0)
     print("시작!\n")
 
+    # 그리기 시작 전 TCP 오프셋 검증 — pen(~289mm)이 아니면(리셋 의심) 움직이기 전에 중단.
+    ok, msg = verify_pen_tcp(DR_init.__dsr__node)
+    print(msg)
+    if not ok:
+        raise TcpMismatchError(msg)
+
     rc = RobotController(cfg)
     stats = rc.execute(ordered)
     print(f"[파이프라인] 완료: 획 {stats.strokes}, 점 {stats.points}, "
@@ -434,3 +489,16 @@ if __name__ == '__main__':
               "필요시 티치펜던트로 안전 위치로 옮기세요.")
         if rclpy.ok():
             rclpy.shutdown()
+    except NoContactError as e:
+        # robot_controller.py 가 이미 안전 위치로 복귀시킨 뒤 이 예외를 던진다 —
+        # 여기서는 트레이스백 대신 원인이 분명한 한 줄 메시지로 깔끔하게 종료.
+        print(f"\n[중단] {e}")
+        if rclpy.ok():
+            rclpy.shutdown()
+        sys.exit(1)
+    except TcpMismatchError as e:
+        # TCP 리셋(오프셋 불일치) 감지 — 로봇을 전혀 움직이지 않고 중단.
+        print(f"\n[중단] {e}")
+        if rclpy.ok():
+            rclpy.shutdown()
+        sys.exit(1)

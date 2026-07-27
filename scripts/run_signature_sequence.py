@@ -74,8 +74,8 @@ def parse_args():
     # 이라는 잘못된 가정 하에), 컨트롤러/모드가 리셋되자 그 큰 값이 그대로 적용돼 위험하게
     # 빨라지는 게 실기에서 확인됨. 전부 원본 DRL 속도(1.0 = 사람이 펜던트에서 가르치고
     # 검증한 속도)로 되돌린다. 다시 올릴 땐 반드시 실기에서 눈으로 보며 한 단계씩만.
-    ap.add_argument('--pen-up-speed', type=float, default=0.595,
-                    help='pen_up 속도 배율. 기본 0.595(0.7에서 -15%)')
+    ap.add_argument('--pen-up-speed', type=float, default=0.506,
+                    help='pen_up 속도 배율. 기본 0.506(0.7→0.595에서 추가 -15%)')
     ap.add_argument('--pen-down-speed', type=float, default=0.595,
                     help='pen_down 속도 배율. 기본 0.595(0.7에서 -15%)')
     ap.add_argument('--brush-speed', type=float, default=0.6375,

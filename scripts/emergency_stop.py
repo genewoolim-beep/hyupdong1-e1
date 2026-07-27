@@ -14,8 +14,9 @@ DSR_ROBOT2.py 에는 이 서비스의 편의 래퍼 함수가 없어서(dsr_msgs
     1 = DR_QSTOP     : Quick stop, Category 2 — 급정지, 서보 제어 유지
     2 = DR_SSTOP     : Soft stop — 부드럽게 감속 후 정지 (Doosan 공식 예제 기본값)
     3 = DR_HOLD      : Hold stop
-기본값 2(Soft stop)로 뒀다 — GUI에서 소프트웨어로 트리거하는 정지라, 급격한 Category 1보다
-제어된 감속이 협동로봇 팔에 더 안전하다고 판단. 더 급하게 세우고 싶으면 --stop-mode 0/1.
+기본값 1(Quick stop, Category 2)로 뒀다 — 긴급중지 버튼용이라 "빨리 서는 것"이 최우선.
+서보 제어는 유지한 채 급감속한다(Soft stop=2 는 부드럽지만 느려서 긴급중지엔 부적합했음).
+더 급하게(토크 차단까지) 세우고 싶으면 --stop-mode 0, 부드럽게 원하면 --stop-mode 2.
 
 사용:
     python3 emergency_stop.py                    # stop_mode=2(Soft stop)
@@ -36,8 +37,8 @@ def parse_args():
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--robot-id', default='dsr01')
     ap.add_argument('--model', default='m0609')
-    ap.add_argument('--stop-mode', type=int, default=2, choices=[0, 1, 2, 3],
-                    help='0=QSTOP_STO 1=QSTOP(Cat2) 2=SSTOP(소프트, 기본) 3=HOLD')
+    ap.add_argument('--stop-mode', type=int, default=1, choices=[0, 1, 2, 3],
+                    help='0=QSTOP_STO 1=QSTOP(Cat2, 기본·급정지) 2=SSTOP(소프트) 3=HOLD')
     ap.add_argument('--timeout-s', type=float, default=3.0,
                     help='서비스 응답 대기 시간(초). 기본 3 — 급하니까 짧게')
     return ap.parse_args()

@@ -38,7 +38,7 @@ from svg_drawing.robot_controller import NoContactError
 from tcp_check import verify_pen_tcp, TcpMismatchError
 
 DEFAULT_SVG = os.path.expanduser(
-    '~/ws_cobot_pjt/ws_dsr/src/svg_drawing/samples/octagon_spiral.svg')
+    '/home/gene/ws_cobot_pjt/ws_dsr/src/svg_drawing/samples/merkaba.svg')
 
 
 def rotate_polys(polys, cx: float, cy: float, deg: float):
@@ -94,7 +94,7 @@ def parse_args():
                          '눈으로 내려 done. 캘리 안 됐는데 켜면 힘을 못 읽어 표면 지나쳐 박힘')
     ap.add_argument('--contact-n', type=float, default=3.0,
                     help='(--auto-contact 시) 이 힘(N) 이상 감지되면 자동 정지·표면기록. 기본 3N')
-    ap.add_argument('--size', type=float, default=218.75,
+    ap.add_argument('--size', type=float, default=100.75,
                     help='그림이 들어갈 정사각 작업영역 한 변(mm). 홈 XY 중심에 배치. '
                          '기본 218.75(175에서 +25%)')
     ap.add_argument('--rotate-deg', type=float, default=90.0,
@@ -115,28 +115,34 @@ def parse_args():
     ap.add_argument('--press-mm', type=float, default=0.25,
                     help='(위치제어) 측정 표면보다 이만큼 더 눌러 긋는다(mm) = 일정 깊이=일정 압력 효과. '
                          '기본 0.25mm. 연하면 0.3~0.5 올리고, 과하면 0.15/0.1 로')
-    ap.add_argument('--force-n', type=float, default=5.5,
-                    help='아크릴을 누르는 목표 힘(N). 기본 5.5N. --force 로 켜면 이 힘으로 Fz 유지')
+    ap.add_argument('--force-n', type=float, default=5.7,
+                    help='아크릴을 누르는 목표 힘(N). 기본 5.7N(6.0→5.7). --force 로 켜면 이 힘으로 Fz 유지')
     ap.add_argument('--force-sign', type=float, default=-1.0,
                     help='누르는 방향 부호. -1=Base -Z(아래로). 설치 자세에 맞춰 조정')
-    ap.add_argument('--stiffness-z', type=float, default=5.0,
+    ap.add_argument('--stiffness-z', type=float, default=20.0,
                     help='힘제어 Z 강성(N/m). 낮을수록 Z 위치제어가 약해지고 힘제어가 우선(=표면추종). '
-                         '기본 5(20→10→5로 낮춤: 표면 기울기 있어도 힘 균일하게, 힘 우선 강화). '
-                         '튀면 올리기(20~100), 위치 우선 원하면 크게(1000+). XY 는 3000 고정')
+                         '기본 20(적당값 — 5까지 낮췄더니 툴이 떠서 불안정해 원래값으로 복귀). '
+                         '더 힘 우선 원하면 10, 튀면 30~100. XY·회전은 3000 고정')
     ap.add_argument('--draw-vel', type=float, default=None,
-                    help='그리기 속도(mm/s). 미지정 시 힘제어=20.64, 위치제어=37.62. 표면 울퉁불퉁하면 '
+                    help='그리기 속도(mm/s). 미지정 시 힘제어=13.21, 위치제어=37.62. 표면 울퉁불퉁하면 '
                          '힘제어에서 더 낮추기(예: 5). 힘 루프가 요철 따라가려면 느려야 함')
     ap.add_argument('--draw-acc', type=float, default=None,
                     help='그리기 가속도(mm/s^2). 미지정 시 힘제어=78.54, 위치제어=150')
     ap.add_argument('--force-push-mm', type=float, default=0.0,
                     help='(힘제어) 획 본체 Z 목표를 표면보다 이만큼 아래로 둠. 기본 0(힘 우선). '
                          '0보다 크면 위치오차를 만들어 힘제어 우선을 해침. 힘 우선은 --stiffness-z 를 낮춰 구현')
-    ap.add_argument('--force-ramp-wait', type=float, default=3.0,
+    ap.add_argument('--force-ramp-wait', type=float, default=2.0,
                     help='(힘제어) 힘제어 ON 직후 목표힘까지 안정될 때까지 긋기 전에 대기하는 시간(초). '
-                         '기본 3.0초(2→3로 늘림: 초반 힘 부족 완화). 짧으면 각 획 초반이 힘이 덜 들어간 채로 흐리게 그어짐')
-    ap.add_argument('--draw-extend', type=float, default=0.03,
-                    help='각 획을 끝에서 이 비율만큼 더 연장해 그린다(0.03=3%%). 힘제어 지연/펜업 '
-                         '타이밍으로 획 끝이 덜 그려지는 것 보완. 삐져나오면 낮추고(0.05), 부족하면 올리기(0.15)')
+                         '기본 2.0초. 짧으면(0 등) 각 획 초반이 힘이 덜 들어간 채로 흐리게 그어짐')
+    ap.add_argument('--draw-extend', type=float, default=0.015,
+                    help='각 획을 끝에서 이 비율만큼, 마지막 진행 방향으로 직선 연장해 그린다'
+                         '(0=끔). 힘제어 지연/펜업 타이밍으로 획 끝이 덜 그려지는 것 보완. '
+                         '기본 0.015(1.5%%)')
+    ap.add_argument('--simplify-tol-mm', type=float, default=0.15,
+                    help='RDP 단순화 허용오차(mm). 2mm 균일 샘플에서 이 오차 이내로 근사되는 '
+                         '중간점을 없애 직선/완만한 곡선 구간의 세그먼트를 길게 만든다(→ 적응형 '
+                         '블렌드가 그 구간에서 더 큰 반경/더 빠른 코너링을 쓸 수 있게 됨). '
+                         '도형 꼭짓점은 오차를 벗어나 그대로 보존됨. 0=끔')
     ap.add_argument('--draw-passes', type=int, default=1,
                     help='같은 획을 이 횟수만큼 왕복하며 겹쳐 그린다(펜 든 채 되짚기). 1=한 번(기본), '
                          '2=왕복 1회 더, 3=세 번. 선을 더 진하게/끝까지 확실히. 시간은 대략 횟수배로 증가')
@@ -255,16 +261,16 @@ def main():
     surface_z = None
 
     if args.auto_z:
-        # ── 자동 모드: 표면 Z를 이미 아니까 대화형 하강 전부 생략, 바로 이동 ──
-        print(f"\n[3] --surface-z {args.surface_z:.2f}mm 지정됨 → 대화형 하강 생략, 바로 이동...")
-        print("    ⚠ 검증 없이 그대로 내려갑니다. 값이 틀리면 위험(펜 박힘/뜸). E-stop 손 위에.")
-        # 가속도 90→76.5(-15%, "모든 동작 15% 감소" 일괄 적용).
-        set_velx(args.jump_vel, 30.0)
-        set_accx(76.5, 90.0)
-        move_to(x0, y0, args.surface_z, rx, ry, rz)
+        # ── 자동 모드: 표면 Z를 이미 아니까 대화형 하강은 물론, 실제로 표면까지 내려갔다
+        # 다시 올라오는 '확인용 접촉'도 생략한다. 이 접촉은 --surface-z 를 신뢰할 수 있게 된
+        # 뒤로는 새 정보를 주지 않는 순수 중복 동작이었다(내려갔다 바로 올라오고, 곧이어
+        # draw_svg_at_surface() 가 어차피 첫 획 시작점에서 다시 내려가 접촉함) — 없애서
+        # pen_up→그리기 사이 시간을 ~1초 단축.
+        print(f"\n[3] --surface-z {args.surface_z:.2f}mm 지정됨 → 대화형 하강 및 확인용 접촉 생략...")
+        print("    ⚠ 검증 없이 이 값을 그대로 씁니다. 값이 틀리면 위험(펜 박힘/뜸). E-stop 손 위에.")
         z = args.surface_z
         surface_z = args.surface_z
-        print(f"    ★ Z={surface_z:.2f}mm 표면으로 확정.")
+        print(f"    ★ Z={surface_z:.2f}mm 표면으로 확정(실제 하강 없이 값만 사용).")
     else:
         # 1) 홈을 start_z(기본 100mm)로 '한 번에' 이동(빠르게 — 표면 위라 안전)
         if args.start_z < z0:
@@ -342,8 +348,13 @@ def main():
     # ── 3) 표면 Z 확정 ──────────────────────────────────────
     print(f"\n[4] 표면 Z = {surface_z:.2f} mm 로 확정.")
     print(f"    config 반영값 →  draw_height_mm: {surface_z:.2f}")
-    # 살짝 들어 올려 안전 확보
-    move_to(x0, y0, surface_z + args.pen_up, rx, ry, rz)
+    if not args.auto_z:
+        # 대화형 모드는 로봇이 지금 surface_z(표면 바로 위/접촉)에 있으니 살짝 들어 올려
+        # 안전 확보. auto 모드는 애초에 안 내려갔으니(홈/준비자세 높이 그대로) 필요 없다 —
+        # 여기서 또 내려가면, 곧이어 draw_svg_at_surface()->execute() 가 movej 로 준비자세로
+        # '다시 올라갔다' 그리기 시작점으로 '또 내려가는' 왕복이 생겨 두 번 오르내리는
+        # 것처럼 보이고 시간도 더 든다. 하강은 execute()+draw_stroke() 한 번으로 충분.
+        move_to(x0, y0, surface_z + args.pen_up, rx, ry, rz)
 
     ans = input("\n[5] 이 높이로 지금 SVG 를 그릴까요? (y/N) > ").strip().lower()
     if ans != 'y':
@@ -362,7 +373,7 @@ def draw_svg_at_surface(args, surface_z: float, home):
     """측정한 surface_z 를 draw_height 로, 홈 XY 중심에 SVG 를 그린다(위치제어)."""
     # 전체 파이프라인을 서비스와 동일하게 재사용
     from svg_drawing.svg_parser import SvgParser
-    from svg_drawing.bezier_sampler import sample_paths
+    from svg_drawing.bezier_sampler import sample_paths, rdp_simplify_paths
     from svg_drawing.coordinate_mapper import CoordinateMapper, WorkArea
     from svg_drawing.trajectory_planner import optimize
     from svg_drawing.robot_controller import RobotConfig, RobotController
@@ -384,6 +395,16 @@ def draw_svg_at_surface(args, surface_z: float, home):
     res_mm = 2.0
     max_seg = res_mm / mapper.scale if mapper.scale > 0 else res_mm
     paper_polys = mapper.map_strokes(sample_paths(parsed.strokes, max_seg))
+    # 곡선 구간이 너무 느린 문제 대응: 2mm 균일 샘플이라 직선/완만한 곡선에도 불필요한
+    # 중간점이 촘촘히 남아있었다. RDP 로 --simplify-tol-mm(기본 0.15mm) 이내로 근사되는
+    # 중간점을 제거 → 직선/완만한 구간 세그먼트가 길어져 robot_controller 의 각도 기반
+    # 적응형 블렌드가 그 구간에서 더 큰 반경(더 빠른 코너링)을 쓸 여지가 생긴다.
+    # 실제 도형 꼭짓점(꺾이는 지점)은 tolerance 를 벗어나 그대로 보존됨.
+    if args.simplify_tol_mm > 0:
+        before = sum(len(p) for p in paper_polys)
+        paper_polys = rdp_simplify_paths(paper_polys, args.simplify_tol_mm)
+        after = sum(len(p) for p in paper_polys)
+        print(f"  단순화(RDP {args.simplify_tol_mm}mm): 점 {before} → {after}개")
     paper_polys = rotate_polys(paper_polys, size / 2.0, size / 2.0, args.rotate_deg)
     ordered = optimize(paper_polys, start=(0.0, 0.0))
     print(f"  획 {len(ordered)}개, 매핑 {mapper.describe()}")
@@ -403,18 +424,21 @@ def draw_svg_at_surface(args, surface_z: float, home):
         approach_height_mm=surface_z + 5.0,       # 시작점 위 접근
         travel_height_mm=surface_z + args.pen_up, # 획 사이 펜업(작게)
         tool_rx_deg=rx, tool_ry_deg=ry, tool_rz_deg=rz,   # 현재 자세 유지
-        # 15.64→17.2mm/s(+10%)→20.64mm/s(+20%), 가속도도 같이 +20%(65.45→78.54).
+        # 힘제어 16.51→13.21mm/s(-20%). 가속도는 한때 62.83→31.4(-50%, 하드정지 지점
+        # 오버슈트 완화용)로 낮췄다가 원래대로 복귀(전역으로 낮추면 코너 많은 곡선마다
+        # 재가속이 느려져 "곡선이 너무 느림"으로 나타났었음) → 이제 곡선 구간은 적응형
+        # 블렌드(draw_blend_radius_max_mm)가 코너 감속을 따로 완화해주니, 전역 가속도는
+        # 62.83→50.26(-20%)로 다시 살짝 낮춰도 곡선 체감 속도에 영향이 적다.
         draw_vel_mm_s=(args.draw_vel if args.draw_vel is not None
-                       else (20.64 if args.force else 37.62)),
+                       else (13.21 if args.force else 37.62)),
         draw_acc_mm_s2=(args.draw_acc if args.draw_acc is not None
-                        else (78.54 if args.force else 150.0)),
+                        else (50.26 if args.force else 120.0)),
         # 획 사이 이동(펜업 상태) 60/300→51/255(-15%)로 같이 낮춤.
         travel_vel_mm_s=51.0, travel_acc_mm_s2=255.0,
         # 각 점에서 완전정지("차큰차큰")하지 않도록 blend radius 부여 → 이어서 부드럽게 통과.
-        # 0.8→1.5mm(+87.5%): 곡선에서 코너마다 크게 느려지는 문제 완화(직선은 이미 방향
-        # 전환이 없어 blend radius 와 무관하게 목표속도까지 감). 샘플 간격(2.0mm)보다는
-        # 여전히 작게 유지해 코너가 심하게 뭉개지진 않게 함(그래도 0.8mm보다는 살짝 둥글어짐).
-        draw_blend_radius_mm=1.5,
+        # ★ 샘플 간격(2.0mm)의 '절반 미만'(<1.0)이어야 인접 블렌드가 안 겹쳐 코너가 안 삐져나옴.
+        # 1.5(간격 절반 초과)로 뒀더니 코너가 부풀어 삐져나오던 문제 → 0.8로 복귀.
+        draw_blend_radius_mm=0.8,
         draw_extend_frac=args.draw_extend,   # 획을 끝에서 이만큼 더 연장(끝이 덜 그려지는 것 보완)
         draw_passes=args.draw_passes,        # 같은 획 왕복 겹쳐그리기 횟수
         # 힘제어: --force 면 설정 높이(surface_z)로 정확히 내려간 뒤 그 지점에서

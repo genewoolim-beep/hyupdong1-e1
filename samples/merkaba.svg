@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 별사면체(메르카바) 시연용 도안 — 대칭이 정확한 육각별(정삼각형 2개) + 안쪽 사면체.
+     기하: 중심(1000,615)=위 삼각형의 무게중심. 외접반경 490. 안쪽 3개 선(Y)은 중심에서
+     위 삼각형의 세 꼭짓점(위/왼아래/오른아래)까지 이어지고, 그 중점들이 안쪽 삼각형을 이룸.
+     각 요소=별도 획(polygon=닫힘, line/path=열림). -->
+<svg xmlns="http://www.w3.org/2000/svg" width="2000" height="1230" viewBox="0 0 2000 1230">
+  <!-- 위로 향한 큰 정삼각형 -->
+  <polygon points="1000,125 576,860 1424,860" fill="none" stroke="black" stroke-width="3"/>
+  <!-- 아래로 향한 큰 정삼각형 -->
+  <polygon points="1000,1105 1424,370 576,370" fill="none" stroke="black" stroke-width="3"/>
+  <!-- 안쪽 사면체 삼각형: 중심→각 꼭짓점 선의 중점 3개 -->
+  <polygon points="1000,370 788,737.5 1212,737.5" fill="none" stroke="black" stroke-width="3"/>
+  <!-- 안쪽 선 2개: 왼아래 꼭짓점 → 중심 → 오른아래 꼭짓점 (한 붓) -->
+  <path d="M 576,860 L 1000,615 L 1424,860" fill="none" stroke="black" stroke-width="3"/>
+  <!-- 안쪽 선 1개: 중심 → 위 꼭짓점 -->
+  <line x1="1000" y1="615" x2="1000" y2="125" stroke="black" stroke-width="3"/>
+</svg>

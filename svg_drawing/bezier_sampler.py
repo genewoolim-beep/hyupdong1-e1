@@ -69,6 +69,54 @@ def sample_paths(paths, max_seg_len: float,
     return result
 
 
+def _perp_distance(pt: Point, a: Point, b: Point) -> float:
+    """pt 에서 선분 a-b(직선 연장 포함)까지의 수직 거리."""
+    ax, ay = a
+    bx, by = b
+    px, py = pt
+    dx, dy = bx - ax, by - ay
+    denom = dx * dx + dy * dy
+    if denom < 1e-12:
+        return math.hypot(px - ax, py - ay)
+    t = ((px - ax) * dx + (py - ay) * dy) / denom
+    cx, cy = ax + t * dx, ay + t * dy
+    return math.hypot(px - cx, py - cy)
+
+
+def rdp_simplify(points: Polyline, epsilon: float) -> Polyline:
+    """Ramer-Douglas-Peucker: 원본 경로에서 epsilon(mm) 이내로 근사되는 중간점을 없앤다.
+    직선/완만한 곡선 구간은 점이 크게 줄어 세그먼트가 길어지고(→ 블렌드 반경을 더 크게
+    줄 여지가 생겨 코너링 속도↑), epsilon 을 벗어나는 실제 꺾이는 지점(도형 꼭짓점,
+    곡률이 큰 부분)은 그대로 보존된다. 반복(스택) 구현이라 점이 많아도 재귀 깊이 걱정 없음."""
+    if epsilon <= 0 or len(points) < 3:
+        return list(points)
+    keep = [False] * len(points)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(points) - 1)]
+    while stack:
+        start, end = stack.pop()
+        if end <= start + 1:
+            continue
+        a, b = points[start], points[end]
+        dmax, idx = 0.0, -1
+        for i in range(start + 1, end):
+            d = _perp_distance(points[i], a, b)
+            if d > dmax:
+                dmax, idx = d, i
+        if dmax > epsilon:
+            keep[idx] = True
+            stack.append((start, idx))
+            stack.append((idx, end))
+    return [p for p, k in zip(points, keep) if k]
+
+
+def rdp_simplify_paths(polys: List[Polyline], epsilon: float) -> List[Polyline]:
+    """여러 폴리라인에 rdp_simplify 를 일괄 적용."""
+    if epsilon <= 0:
+        return polys
+    return [rdp_simplify(poly, epsilon) for poly in polys]
+
+
 # ── 단독 테스트 ──────────────────────────────────────────────────────────────
 if __name__ == '__main__':
     # svgpathtools 없이도 최소 검증이 되도록, 없으면 가짜 세그먼트로 테스트한다.

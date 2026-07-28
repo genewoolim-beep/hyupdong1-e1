@@ -51,6 +51,7 @@ SAMPLES_DIR = os.path.join(os.path.dirname(SCRIPT_DIR), 'samples')
 SAMPLE_SVGS = {
     'square': os.path.join(SAMPLES_DIR, 'square.svg'),
     'hex_spiral': os.path.join(SAMPLES_DIR, 'hex_spiral.svg'),
+    'merkaba': os.path.join(SAMPLES_DIR, 'merkaba.svg'),   # 시연용 별사면체 도안
 }
 JOBS: dict = {}
 JOBS_LOCK = threading.Lock()

@@ -63,6 +63,15 @@ class RobotConfig:
     stroke_mode: str = "movel"          # "movel" | "movesx"
     movesx_chunk: int = 50
     draw_blend_radius_mm: float = 0.0
+    # ── 각도 기반 적응형 블렌드(곡선 구간 가속용) ──────────────────────────
+    # 직선은 점마다 진행방향이 거의 안 바뀌어(꺾임각≈0) 코너 감속이 없어 순항속도까지
+    # 가속되는데, 곡선은 촘촘한 점마다 조금씩 계속 꺾여서 매 점에서 "감속→코너 통과→
+    # 재가속"을 반복해 항상 느리다. 꺾임각이 작은(완만한) 점은 블렌드 반경을 키워 더 빠른
+    # 코너링 속도를 허용하고, draw_blend_sharp_deg 이상(진짜 뾰족한 꼭짓점)은 지금처럼
+    # draw_blend_radius_mm 로 좁게 유지해 정확도를 지킨다. 인접 세그먼트 길이의 40% 를
+    # 넘지 않게 클램프(겹쳐서 코너가 부푸는 것 방지 — 블렌드 1.5mm/2mm간격 때 겪은 문제).
+    draw_blend_radius_max_mm: float = 4.0
+    draw_blend_sharp_deg: float = 25.0
     # 획 사이 이동(상승→수평이동→접근→접촉)이 전부 radius=0 이라 각 구간마다 완전정지
     # 했다가 재출발해서 "여러 번 뜨고 멈췄다 내려가는" 것처럼 보이던 문제 방지용 블렌드.
     # 5.0→2.0: 수직→수평처럼 방향이 크게 꺾이는 코너에서 블렌드가 크면 실제 travel_height
@@ -80,9 +89,13 @@ class RobotConfig:
     # 움직이면 힘제어가 접촉을 유지할 시간이 생겨 초반부터 힘이 제대로 들어간다. 0이면 끔.
     draw_start_slow_pts: int = 6
     draw_start_slow_frac: float = 0.4
-    # 획 끝~시작점 거리가 이 값(mm) 이하면 '닫힌 획'으로 보고, 연장 시 직선 외삽 대신
-    # 시작 경로를 따라 이어 그려(랩어라운드) 시작 부분에 겹치게 한다(닫힘 연결).
-    close_tol_mm: float = 5.0
+    # 획 끝 이 개수만큼의 점도 느리게 긋는다(대칭 목적: 시작만 느리면 끝점은 순항 속도로
+    # 달려와 radius=0 하드정지를 명령하는데, 힘제어 하 펜(289mm 지렛대)의 관성/드래그가
+    # 다 못 멎고 목표점을 살짝 지나쳐 "꼭짓점보다 길게 삐져나오는" 오버슈트가 됨.
+    # 특히 직선 구간이 길수록(예: 별 안쪽 Y 스포크가 꼭짓점까지 곧게 뻗는 경우) 순항 속도가
+    # 높이 붙어 눈에 띄게 나타난다. 0이면 끔.
+    draw_end_slow_pts: int = 6
+    draw_end_slow_frac: float = 0.4
 
     # 그리기 시작 전 이동할 안전 준비자세(joint, deg). None 이면 생략.
     # 전원 직후 로봇은 수직으로 쭉 뻗은 '특이점' 자세일 수 있는데, 특이점에서 출발하는
@@ -280,11 +293,14 @@ class RobotController:
         self._task_compliance_ctrl()                     # 컴플라이언스 ON
         self._set_stiffnessx(self.cfg.compliance_stiffness, time=0.0)
         fz = self.cfg.force_z_sign * force_n             # 부호로 누르는 방향 결정
-        # time=0.3: DRL 커맨드 자체의 힘 램프업 시간(이 시간에 걸쳐 목표힘까지 부드럽게 올림).
-        # 다만 실기에서는 이 0.3초가 지나도 실제로 완전히 안정(정착)되기까지 더 걸려서,
-        # draw_stroke() 에서 cfg.force_ramp_wait_s(기본 2초) 만큼 별도로 더 대기한다.
+        # time=0.1: DRL 커맨드 자체의 힘 램프업 시간(이 시간에 걸쳐 목표힘까지 올림).
+        # 0.3→0.15→0.1 로 줄여 목표힘 도달 자체를 더 빠르게 함(전체 대기시간을 늘리는 대신
+        # 수렴 속도를 올리는 쪽). 너무 짧으면 힘이 급격히 걸려 오버슈트/흔들림 위험이 있으니
+        # 실기에서 튀는 게 보이면 다시 0.15~0.3 쪽으로 올릴 것. 그래도 실기에서 완전히
+        # 정착되기까지는 조금 더 걸려서, draw_stroke() 에서 cfg.force_ramp_wait_s(기본 2초)
+        # 만큼 별도로 더 대기한다.
         self._set_desired_force([0.0, 0.0, fz, 0.0, 0.0, 0.0],
-                                [0, 0, 1, 0, 0, 0], time=0.3, mod=self._DR_FC_MOD_ABS)
+                                [0, 0, 1, 0, 0, 0], time=0.1, mod=self._DR_FC_MOD_ABS)
 
     def _disable_z_force(self):
         if self.cfg.dry_run:
@@ -327,12 +343,9 @@ class RobotController:
 
     # ── 한 획 그리기 ────────────────────────────────────────
     def _extend_stroke(self, poly: Polyline) -> Polyline:
-        """획 끝을 draw_extend_frac(전체 길이 기준)만큼 더 그어 끝이 덜 그려지거나 폐곡선이
-        안 닫히는 걸 보완한다.
-        - 닫힌 획: '도안 자체의 시작 곡선(poly[1], poly[2]…)'을 이어 그려 시작 부분에 겹친다.
-          직선 외삽/합성 곡선이 아니라 원래 도안 경로를 그대로 연장한 거라 자연스럽게 이어지고,
-          로봇의 ~1mm 경로 오차로 생기는 시작/끝 틈을 겹쳐서 덮는다.
-        - 열린 획: 마지막 진행 방향으로 직선 외삽."""
+        """획 끝을 draw_extend_frac(전체 길이 기준)만큼, 마지막으로 진행된 방향으로 직선
+        연장해 그린다(열림/닫힘 구분 없이 항상 직선 외삽) — 힘제어 지연/펜업 타이밍으로
+        획 끝이 덜 그려지거나 폐곡선이 안 닫히는 걸 보완."""
         frac = self.cfg.draw_extend_frac
         if frac <= 0 or len(poly) < 3:
             return poly
@@ -343,23 +356,7 @@ class RobotController:
             return poly
         ext = total * frac
 
-        (p0x, p0y), (pnx, pny) = poly[0], poly[-1]
-        gap = math.hypot(pnx - p0x, pny - p0y)
-        # 닫힘 판정: 끝~시작 거리가 절대 기준(close_tol_mm) 또는 획 길이의 20% 이하면 닫힘.
-        closed = gap <= max(self.cfg.close_tol_mm, 0.20 * total)
-        if closed:
-            # 도안의 시작 경로를 ext 길이만큼 이어 그림 → 시작 부분에 자연스럽게 겹침.
-            out = list(poly)
-            acc = 0.0
-            prev = poly[-1]
-            for pt in poly[1:]:
-                acc += math.hypot(pt[0] - prev[0], pt[1] - prev[1])
-                out.append(pt)
-                prev = pt
-                if acc >= ext:
-                    break
-            return out
-        # 열린 획: 마지막 진행 방향으로 직선 외삽
+        # 마지막 진행 방향으로 직선 외삽
         (px, py), (qx, qy) = poly[-2], poly[-1]
         dx, dy = qx - px, qy - py
         d = math.hypot(dx, dy)
@@ -470,21 +467,90 @@ class RobotController:
         pts = poly if include_first else poly[1:]
 
         n = len(pts)
-        # 시작 몇 점은 느리게 — 정지→이동 전환 시 힘 루프 지연으로 초반이 뜬 채(가늘게)
-        # 그어지는 것 완화. 그 구간이 끝나면 정상 속도로 복귀.
-        slow_n = 0 if self.cfg.dry_run else min(self.cfg.draw_start_slow_pts, n)
+        # 시작/끝 슬로우존은 "점 개수"가 아니라 "거리"로 잰다. draw_start/end_slow_pts 는
+        # 원래 2mm 균일 샘플 기준으로 튜닝된 값(6점=12mm)인데, RDP 단순화로 점 간격이
+        # 제각각(수mm~수십mm)이 되면서 점 개수 그대로 쓰면 단순화가 많이 된 획(점이 몇 개
+        # 안 남음)은 전체가 슬로우존이 돼버리는 문제가 생긴다. 그래서 "점개수 × 2mm"를
+        # 목표 거리로 놓고, 그 거리에 도달할 때까지의 실제 점 수를 센다.
+        slow_n = 0 if self.cfg.dry_run else self._slow_zone_point_count(
+            pts, self.cfg.draw_start_slow_pts)
+        # 끝도 마찬가지로 거리 기준. 순항 속도로 달려와 마지막 점(radius=0, 하드정지)에
+        # 그대로 부딪히면 관성/펜 드래그로 목표점을 살짝 지나치는 오버슈트가 생기는 걸 완화.
+        end_slow_n = 0 if self.cfg.dry_run else self._slow_zone_point_count(
+            pts, self.cfg.draw_end_slow_pts, from_end=True)
+        # 짧은 획에서 시작/끝 슬로우존이 겹치지 않게 클램프.
+        if slow_n + end_slow_n > n:
+            end_slow_n = max(0, n - slow_n)
+        end_slow_start_i = n - end_slow_n
         if slow_n > 0:
             self._set_velx(self.cfg.draw_vel_mm_s * self.cfg.draw_start_slow_frac,
                            self.cfg.move_rot_vel_deg_s)
             self._set_accx(self.cfg.draw_acc_mm_s2, self.cfg.move_rot_acc_deg_s2)
+        offset = 0 if include_first else 1   # pts[i] == poly[i + offset]
         for i, (px, py) in enumerate(pts):
             if slow_n and i == slow_n:
                 self._use_draw_speed()   # 느린 시작 구간 끝 → 정상 속도
+            if end_slow_n and i == end_slow_start_i:
+                self._set_velx(self.cfg.draw_vel_mm_s * self.cfg.draw_end_slow_frac,
+                               self.cfg.move_rot_vel_deg_s)
+                self._set_accx(self.cfg.draw_acc_mm_s2, self.cfg.move_rot_acc_deg_s2)
             # 마지막 점은 radius=0 으로 '정확히' 찍는다. blend radius 를 마지막 점까지 주면
             # 코너를 잘라 끝점 ~1.5mm 앞에서 펜업이 시작돼 획이 짧아지고(닫힌 도형이 안 닫혀
-            # 시작점과 ~2mm 벌어짐). 중간 점은 그대로 blend 유지(부드러움·속도).
-            radius = 0.0 if i == n - 1 else r
+            # 시작점과 ~2mm 벌어짐). 중간 점은 각도 기반 적응형 블렌드(완만하면 크게,
+            # 뾰족하면 좁게)로 곡선 구간을 더 빠르게 통과한다.
+            if i == n - 1:
+                radius = 0.0
+            else:
+                radius = self._corner_radius(poly, i + offset, r,
+                                             self.cfg.draw_blend_radius_max_mm,
+                                             self.cfg.draw_blend_sharp_deg)
             self._movel_to(px, py, z, radius=radius)
+
+    _SLOW_ZONE_SAMPLE_MM = 2.0   # draw_start/end_slow_pts 를 튜닝했던 기준 샘플 간격
+
+    def _slow_zone_point_count(self, pts: Polyline, n_pts_equiv: int,
+                               from_end: bool = False) -> int:
+        """pts 의 시작(또는 끝, from_end=True)에서 n_pts_equiv * _SLOW_ZONE_SAMPLE_MM(mm)
+        거리에 도달할 때까지의 점 개수. RDP 로 점 간격이 원래 2mm 균일 샘플과 달라져도
+        슬로우존이 항상 '같은 실제 거리'가 되도록 점 개수를 거리 기준으로 재계산한다."""
+        if n_pts_equiv <= 0 or len(pts) == 0:
+            return 0
+        target = n_pts_equiv * self._SLOW_ZONE_SAMPLE_MM
+        seq = list(reversed(pts)) if from_end else pts
+        acc = 0.0
+        for i in range(1, len(seq)):
+            ax, ay = seq[i - 1]
+            bx, by = seq[i]
+            acc += math.hypot(bx - ax, by - ay)
+            if acc >= target:
+                return min(i + 1, len(pts))
+        return len(pts)
+
+    def _corner_radius(self, poly: Polyline, idx: int, base_r: float,
+                       max_r: float, sharp_deg: float) -> float:
+        """poly[idx] 지점의 안전한 블렌드 반경. 꺾임각(진행방향 변화)이 sharp_deg 이상인
+        진짜 코너는 base_r 로 좁게, 그보다 완만한 곡선 점은 0°(직진)에 가까울수록 max_r 에
+        가깝게 키운다. 인접 두 세그먼트 길이의 40% 를 넘지 않게 클램프해 옆 블렌드와
+        겹쳐 코너가 부푸는 것을 방지한다."""
+        if max_r <= base_r or idx <= 0 or idx >= len(poly) - 1:
+            return base_r
+        ax, ay = poly[idx - 1]
+        bx, by = poly[idx]
+        cx, cy = poly[idx + 1]
+        v1x, v1y = bx - ax, by - ay
+        v2x, v2y = cx - bx, cy - by
+        l1 = math.hypot(v1x, v1y)
+        l2 = math.hypot(v2x, v2y)
+        if l1 < 1e-9 or l2 < 1e-9:
+            return base_r
+        cos_a = max(-1.0, min(1.0, (v1x * v2x + v1y * v2y) / (l1 * l2)))
+        turn_deg = math.degrees(math.acos(cos_a))
+        seg_cap = 0.4 * min(l1, l2)
+        if turn_deg >= sharp_deg or sharp_deg <= 0:
+            return min(base_r, seg_cap)
+        straightness = 1.0 - (turn_deg / sharp_deg)   # 0(코너 문턱)~1(완전 직진)
+        r = base_r + (max_r - base_r) * straightness
+        return max(base_r, min(r, seg_cap))
 
     def _draw_body_movesx(self, poly: Polyline):
         """스트로크를 movesx(스플라인)로 chunk 단위로 그린다(빠름)."""
@@ -593,11 +659,11 @@ class RobotController:
             self._movej(self._posj(*self.cfg.ready_joints_deg),
                         vel=30.0, acc=30.0, ra=self._DR_MV_RA_DUPLICATE)
 
-        # 시작 전 안전하게 travel 높이로 올려둔다(첫 획 위에서 하강하도록)
-        if strokes and not self.cfg.dry_run:
-            self._use_travel_speed()
-            fx, fy = strokes[0][0]
-            self._movel_to(fx, fy, self.cfg.travel_height_mm)
+        # [제거] 예전엔 여기서 travel 높이로 미리 이동시켰는데, draw_stroke() 가 각 획 시작
+        # 시 정확히 같은 지점(첫 획 기준 동일 xy·travel_height)으로 다시 이동하는 로직을
+        # 이미 갖고 있어(blend radius 까지 붙여) 완전 중복이었다 — 같은 자리에서 완전정지
+        # 했다가 재출발하는 왕복이 하나 통째로 낭비되던 것. ready 자세(대개 travel_height
+        # 보다 높음)에서 draw_stroke() 의 첫 movel 로 바로 대각선 하강시켜 제거.
 
         for idx, poly in enumerate(strokes):
             self.draw_stroke(poly)

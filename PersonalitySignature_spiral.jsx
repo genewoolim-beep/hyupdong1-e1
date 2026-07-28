@@ -3,7 +3,7 @@
 // 설문(22문항, 1~5점) → 성향벡터(6종) + MBTI(4축) → 문양(폴리라인) 생성 → SVG/로봇JSON 내보내기
 // 문양은 "획(폴리라인)" 단위로 생성 → 화면·SVG·로봇 펜플로터가 같은 데이터를 공유한다.
 
-import React, { useState, useEffect, useMemo, useRef } from "react";
+const { useState, useEffect, useMemo, useRef } = React;
 
 /* ────────────────────────────────────────────────────────────
    1. 설문 정의
@@ -1013,7 +1013,7 @@ function BgGlyphs() {
   );
 }
 
-export default function PersonalitySignature() {
+function PersonalitySignature() {
   const [screen, setScreen] = useState("intro"); // intro | quiz | result
   const [answers, setAnswers] = useState(Array(QUESTIONS.length).fill(null));
   const [qi, setQi] = useState(0);

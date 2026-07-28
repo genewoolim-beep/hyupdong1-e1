@@ -1,66 +1,72 @@
-# svg_drawing
+# svg_drawing — MBTI 성향 시그니처 로봇 드로잉 시스템
 
-Doosan Robotics **M0609** 협동로봇으로 아크릴 표면에 철 펜(0.5mm)을 이용해
-**SVG(만다라 라인아트)** 를 스크래치 드로잉하는 ROS2 **Humble** 패키지.
+Doosan Robotics **M0609** 협동로봇 + **OnRobot RG2** 그리퍼로, 펜을 쥐고 아크릴판에
+**SVG 도안(성향 시그니처 문양 / 샘플 도형)**을 스크래치로 그린 뒤, 붓으로 먼지를 털고
+완성된 판을 집어 전달까지 하는 **완전 자동화 파이프라인**입니다.
 
-> 📖 **처음 쓰는 팀원은 [사용설명서.md](사용설명서.md) 를 보세요** (실행 방법·키보드 조작·문제해결).
-> 이 README 는 패키지 구조·서비스 방식 등 **개발자용 기술 문서**입니다.
->
-> ⚠️ 실사용은 서비스보다 **`scripts/lower_to_paper.py`(키보드로 표면 잡고 위치제어로 그리기)** 를 권장.
-> **힘제어(`use_force_control`)는 payload/TCP 캘리 전엔 펜이 박혀 못 씁니다** → 기본 위치제어 사용.
+> 처음 쓰는 분은 이 문서 순서대로(설치 → GUI 실행) 따라 하면 됩니다.
+> 터미널에서 SVG 하나만 빠르게 그려보고 싶다면 [6. 터미널에서 직접 그리기](#6-터미널에서-직접-그리기)로 바로 가세요.
+> 오늘까지의 상세 변경 이력은 [`CHANGELOG_2026-07-28.md`](CHANGELOG_2026-07-28.md) 참고.
 
-- 입력: **ROS2 Service** 로 **SVG 파일 경로** 전달 (PNG/JPG 등 래스터 미사용)
-- SVG **벡터(`<path>` 중심 + line/polyline/polygon/circle/ellipse/rect)** 를 직접 분석
-  (OpenCV edge/contour **미사용**)
-- Bezier/Arc 곡선을 **실측 0.5mm 간격**으로 샘플링 → 연속 폴리라인
-- **A5(148×210mm)** 작업영역에 **비율 유지 + 중앙 정렬**로 스케일
-- 획 순서를 **Nearest-Neighbor** 로 최적화(공중 이동 최소화)
-- 펜 자세(Rx,Ry,Rz) 고정, **XY 평면**에서만 이동
-- **펜 집기/놓기는 구현 제외**(스펙). **Z 높이·TCP·용지 위치는 config 로 분리**(추후 캘리브레이션)
+---
 
-## 패키지 구성
+## 1. 전체 그림
 
 ```
-svg_drawing_interfaces/         # ament_cmake : 서비스 정의
-  srv/DrawSvg.srv               #   string svg_path --- bool success, string message
-svg_drawing/                    # ament_python : 노드 + 모듈
+브라우저 (personality_signature.html)
+   │  MBTI 설문 → 문양 생성 → [로봇으로 그리기] 클릭
+   │  fetch("http://127.0.0.1:8787/...")
+   ▼
+scripts/gui_bridge_server.py   ── 로컬 HTTP 브릿지(포트 8787, 표준 라이브러리만 사용)
+   │  subprocess 로 아래를 순서대로 실행
+   ▼
+scripts/run_signature_sequence.py   ── 오케스트레이터(하나라도 실패하면 즉시 중단)
+   ├─ run_drl_motion.py --motion pen_up     펜 집기
+   ├─ lower_to_paper.py --svg <문양.svg>     아크릴에 실제로 그리기 (핵심 로직)
+   ├─ run_drl_motion.py --motion pen_down   펜 반납
+   ├─ run_drl_motion.py --motion brush      붓으로 가루 제거
+   └─ run_drl_motion.py --motion grab       완성판 집어서 전달
+```
+
+`lower_to_paper.py`가 내부적으로 쓰는 그리기 엔진은 `svg_drawing/robot_controller.py`
+(ROS2 패키지 소스지만, `scripts/`에서 같은 폴더 상대경로로 import하기 때문에 **수정 후
+빌드 없이 바로 반영**됩니다 — `svg_parser.py`/`bezier_sampler.py` 등도 마찬가지).
+
+---
+
+## 2. 폴더 구조
+
+```
+svg_drawing_interfaces/         # ament_cmake: ROS2 서비스 정의(.srv) — 선택적 경로용
+svg_drawing/                    # ament_python 패키지 (핵심 로직)
   svg_drawing/
-    svg_parser.py               # SVG → 획(Path) 리스트 (svgelements: use/transform 평탄화)
-    bezier_sampler.py           # 곡선 → 0.5mm 폴리라인 샘플링
-    coordinate_mapper.py        # SVG → A5 용지 mm (비율유지·중앙정렬)
-    trajectory_planner.py       # Nearest-Neighbor 획 순서 최적화
-    robot_controller.py         # 용지 mm → Base 좌표, Doosan 모션 실행
-    drawing_server.py           # ROS2 서비스 서버(전체 파이프라인)
-  config/drawing_params.yaml    # Z높이/TCP/용지/속도/샘플간격 등 전 파라미터
-  launch/drawing.launch.py
-scripts/                        # 독립 실행 스크립트(빌드 불필요, 바로 python3 실행)
-  lower_to_paper.py             #   키보드로 표면 잡고 위치제어로 SVG 그리기(가장 많이 씀)
-  drl_motions.py                #   pen_up/pen_down/brush/grab 픽앤플레이스 모션 정의
-  run_drl_motion.py             #   drl_motions.py 단일 모션 CLI 실행기(--speed-scale 등)
-  run_signature_sequence.py     #   pen_up→그리기→pen_down→brush→grab 전체 시퀀스 오케스트레이터
-  gui_bridge_server.py          #   브라우저 GUI ↔ 로봇 제어 로컬 HTTP 브릿지(포트 8787)
-  emergency_stop.py             #   motion/move_stop 서비스 직접 호출(긴급정지)
+    svg_parser.py               #   SVG → 획(Path) 리스트
+    bezier_sampler.py           #   곡선 샘플링(2mm) + RDP 점 단순화
+    coordinate_mapper.py        #   SVG 좌표 → 실제 mm 좌표 매핑
+    trajectory_planner.py       #   획 순서 최적화(이동거리 최소화)
+    robot_controller.py         #   실제 로봇 모션 실행(힘제어·블렌드·슬로우존 등 전부 여기)
+scripts/                        # 독립 실행 스크립트(빌드 불필요, python3 로 바로 실행)
+  lower_to_paper.py             #   ★ SVG 한 장을 아크릴에 그리는 핵심 스크립트
+  drl_motions.py                #   pen_up/pen_down/brush/grab 모션 정의
+  run_drl_motion.py             #   drl_motions.py 단일 모션 CLI 실행기
+  run_signature_sequence.py     #   pen_up→그리기→pen_down→brush→grab 전체 오케스트레이터
+  gui_bridge_server.py          #   브라우저 GUI ↔ 로봇 로컬 HTTP 브릿지(포트 8787)
+  tcp_check.py / tcp_info.py    #   TCP(펜 오프셋 289mm) 리셋 감지 안전 가드
+  emergency_stop.py             #   긴급정지
   go_home.py                    #   준비자세 복귀
-  force_monitor.py / velocity_monitor.py  # 힘/속도 실측 모니터링(디버그용)
-samples/                        # 테스트용 SVG(square, hex_spiral 등)
-PersonalitySignature_spiral.jsx # MBTI→문양 생성기 React 소스(GUI 원본, 로봇 연동 버튼 포함)
-personality_signature.html      # 위 jsx를 CDN React+Babel로 즉시 실행하는 정적 페이지(빌드 불필요)
+samples/                        # 테스트/데모용 SVG 도안
+PersonalitySignature_spiral.jsx # MBTI→문양 생성기 React 소스(GUI 원본)
+personality_signature.html      # 위 jsx를 CDN React+Babel로 즉시 실행하는 정적 페이지
+CHANGELOG_2026-07-*.md          # 작업 이력(문제/원인/해결 정리)
 ```
 
-> 서비스(.srv)는 순수 `ament_python` 에서 생성이 안 되므로, 표준 방식대로
-> 별도 `ament_cmake` 인터페이스 패키지(`svg_drawing_interfaces`)로 분리했습니다.
->
-> `scripts/` 아래 파일들은 `svg_drawing` 패키지 밖의 독립 스크립트라 **colcon 빌드가 필요 없습니다**
-> (수정 후 바로 `python3 scripts/파일명.py` 로 실행). 빌드가 필요한 건 `svg_drawing/` 패키지
-> 내부(`svg_parser.py` 등 서비스가 import 하는 모듈)를 고쳤을 때뿐입니다.
+---
 
-## 다른 컴퓨터(노트북)에서 설치하기
-
-이 저장소를 새 컴퓨터에서 그대로 쓰려면:
+## 3. 설치 (새 컴퓨터에서 처음 켤 때)
 
 ```bash
-# 1) ROS2 Humble 설치 + Doosan M0609 드라이버(dsr_bringup2, dsr_msgs2 등)는 별도로 이미
-#    설치되어 있어야 함(이 저장소는 그 위에 얹는 응용 패키지). 로봇 제조사 워크스페이스 설정을 먼저 마칠 것.
+# 1) ROS2 Humble + Doosan M0609 드라이버(dsr_bringup2, dsr_msgs2 등)가 이미
+#    설치돼 있어야 합니다(제조사 워크스페이스 설정을 먼저 마칠 것).
 
 # 2) 이 저장소를 콜콘 워크스페이스의 src/ 에 클론
 cd ~/ws_cobot_pjt/ws_dsr/src
@@ -69,160 +75,265 @@ git clone <이 저장소 URL> svg_drawing
 # 3) 파이썬 의존성
 pip install svgelements numpy
 
-# 4) 빌드
+# 4) 빌드(최초 1회 — 이후 scripts/, svg_drawing/*.py 수정은 재빌드 불필요)
 cd ~/ws_cobot_pjt/ws_dsr
 colcon build --packages-select svg_drawing_interfaces svg_drawing
 source install/setup.bash
 ```
 
-브라우저 GUI(`personality_signature.html`)는 별도 설치 없이 **파일 하나로 바로 실행**됩니다
-(React/Babel을 CDN에서 불러오므로 최초 실행 시 인터넷 연결만 있으면 됨, Node.js/npm 불필요).
+`personality_signature.html`은 **파일 하나로 바로 열리는 정적 페이지**입니다
+(React/Babel을 CDN에서 불러오므로 최초 실행 시 인터넷 연결만 있으면 되고, Node.js/npm은
+불필요합니다).
 
-> **실제로 GUI를 켜고 로봇을 움직이는 손에 잡히는 절차(터미널 명령·버튼 순서·안전 수칙)는
-> [사용설명서.md](사용설명서.md) 의 "GUI로 로봇 구동하기" 절을 그대로 따라 하세요.**
-> 이 README 는 코드 구조 설명이 목적이고, 실행 순서의 최종 기준은 사용설명서입니다.
+---
 
-## 의존성 설치
+## 4. GUI로 로봇 구동하기 (가장 많이 쓰는 방법)
 
-```bash
-pip install svgelements numpy      # svgelements 는 rosdep 키가 없어 pip 설치 필요
-```
-
-## 빌드
+### 4-1. 터미널 A — 로봇 켜기
 
 ```bash
-cd ~/ws_cobot_pjt/ws_dsr
-colcon build --packages-select svg_drawing_interfaces svg_drawing
-source install/setup.bash
+source /opt/ros/humble/setup.bash
+source ~/ws_cobot_pjt/ws_dsr/install/setup.bash
+ros2 launch m0609_rg2_bringup bringup.launch.py mode:=real host:=192.168.1.100
 ```
+- 실행 전: 로봇 전원 ON → 안전(safety) 해제 → **자율(Autonomous) 모드**
+- 처음 켜는 컴퓨터/로봇 조합이면 `mode:=virtual`(시뮬)로 먼저 전체 흐름을 검증하세요.
 
-## 실행
+### 4-2. 터미널 B — 브릿지 서버 (그리는 동안 계속 켜둘 것)
 
 ```bash
-# 1) (실장비) Doosan bringup 을 먼저 실행해 /dsr01/... 서비스가 떠 있어야 함
-#    ros2 launch dsr_bringup2 dsr_bringup2_rviz.launch.py mode:=real host:=192.168.x.x ...
-
-# 2) 드로잉 서버
-ros2 launch svg_drawing drawing.launch.py
-#   로봇 없이 경로만 검증하려면:
-ros2 launch svg_drawing drawing.launch.py dry_run:=true
-
-# 3) SVG 그리기 요청
-ros2 service call /dsr01/draw_svg svg_drawing_interfaces/srv/DrawSvg \
-    "{svg_path: '/absolute/path/mandala.svg'}"
+source /opt/ros/humble/setup.bash
+source ~/ws_cobot_pjt/ws_dsr/install/setup.bash
+cd ~/ws_cobot_pjt/ws_dsr/src/svg_drawing/scripts
+python3 gui_bridge_server.py --port 8787
+```
+아래처럼 뜨면 성공(진행 로그가 이 창에 계속 찍힙니다):
+```
+[gui_bridge_server] http://127.0.0.1:8787 대기 중 (plate_size=112.5mm, pen_up=0.595, ...)
 ```
 
-## 파라미터 (config/drawing_params.yaml)
+### 4-3. 브라우저 — GUI 열기
 
-| 파라미터 | 의미 | 비고 |
+`personality_signature.html`을 더블클릭(또는 브라우저 주소창에 파일 경로 입력)해서 엽니다.
+
+| 화면 | 버튼 | 동작 |
 |---|---|---|
-| `draw_height_mm` / `travel_height_mm` / `approach_height_mm` | 긋기/이동/접근 Z(Base) | **추후 캘리브레이션 필수** |
-| `paper_origin_x_mm` / `paper_origin_y_mm` | 용지 좌상단의 Base 좌표 | **추후 캘리브레이션 필수** |
-| `paper_x_sign` / `paper_y_sign` | 용지축→Base축 방향 부호 | 설치 방향에 맞춤 |
-| `tool_rx_deg/ry/rz` | 고정 펜 자세 | TCP 설정에 맞춤 |
-| `sample_resolution_mm` | 곡선 샘플 간격(실측) | 기본 0.5 |
-| `work_area_*` | A5 크기·여백·중앙정렬 | |
-| `stroke_mode` | `movel`(충실)/`movesx`(빠름) | |
-| `draw_blend_radius_mm` | movel 점간 블렌드 반경 | 0=정확, ↑=부드럽고 빠름 |
-| `use_force_control` | Z축 힘제어로 긋기 | ⚠️ **payload/TCP 캘리 후에만**. 캘리 전엔 펜 박힘 → 기본 `false`(위치제어) |
-| `draw_force_n` / `force_z_sign` | 누르는 힘(N) / 방향 부호 | 실장비 튜닝 |
-| `compliance_stiffness` | [x,y,z,rx,ry,rz] 강성 | XY딱딱/Z물렁 |
-| `probe_*` | 터치오프 힘·속도·안전한계 | `/touch_off` 서비스용 |
-| `dry_run` | 로봇 미동작(경로만 계산) | 검증용 |
+| 인트로 | 샘플: 사각형 / hex_spiral | 설문 없이 저장된 도형을 바로 그림 — **처음 켰을 때 전체 흐름 검증용으로 추천** |
+| 인트로/결과 | 긴급중지 | 로봇을 그 자리에서 즉시 세움 |
+| 인트로/결과 | 원위치 | 준비자세로 복귀(다른 동작 진행 중이면 거절) |
+| 인트로/결과 | 펜 내려놓기 | 힘 안 들이고 펜을 그리퍼에서 즉시 놓는 단독 동작 |
+| 결과(설문 후) | 로봇으로 그리기 | 방금 만든 문양으로 전체 시퀀스(펜집기→그리기→펜반납→붓질→전달) 수행 |
 
-## Z축 힘 제어 (스크래치 접촉 품질)
+버튼을 누르면 화면에 진행 상태(대기중/진행중/완료/오류/중지됨)와 획 진행률(%)이
+자동 갱신됩니다.
 
-`use_force_control: true` 면 획을 그을 때 **XY 는 위치제어(정확한 형태), Z 는 일정 힘으로
-누르는 힘제어**로 그린다. 아크릴 표면이 미세하게 울퉁불퉁하거나 `draw_height` 가 조금
-안 맞아도 펜이 **일정 압력**으로 눌려 접촉이 유지된다(스크래치 굵기 균일·안전).
-`gear_assembly.py` 의 `task_compliance_ctrl`/`set_desired_force` 와 같은 방식이다.
-> 실장비에서 `draw_force_n`(누르는 힘)과 `force_z_sign`(누르는 방향)은 반드시 튜닝하세요.
-
-## 터치오프 (표면 Z 자동 측정) — `/touch_off` 서비스
-
-펜을 표면 위에서 천천히 내려 **접촉을 감지**하고, 측정된 Base Z 로 `draw_height_mm` 를
-자동 갱신한다. → 매번 손으로 Z 를 재는 수고를 없앤다.
-
-```bash
-# 용지 중앙(예: 74,105 mm) 근처를 짚어 표면 Z 측정
-ros2 service call /dsr01/touch_off svg_drawing_interfaces/srv/TouchOff \
-    "{x_mm: 74.0, y_mm: 105.0}"
-# 성공 시 draw_height_mm 자동 갱신 → 바로 draw_svg 호출하면 됨
-```
-**안전장치**(config `probe_*`): 예상 표면보다 위에서만 하강 시작, 최대 하강거리·타임아웃
-초과 시 중단, 툴 무게 정적힘 오탐 방지(최소 하강량 이상 내려간 뒤에만 접촉 인정).
-> 시뮬(에뮬레이터)은 접촉 물리가 없어 터치오프가 항상 '안전 중단'된다(정상). 실장비 전용.
-
-## 실장비 캘리브레이션 → 드로잉 순서
-
-```bash
-# 0) (실장비) bringup: ros2 launch m0609_rg2_bringup bringup.launch.py mode:=real host:=<IP>
-# 1) 드로잉 서버(힘제어 켜서)
-ros2 launch svg_drawing drawing.launch.py    # config 에서 use_force_control: true 로
-# 2) TCP·용지원점·자세는 config 에 먼저 입력(펜 TCP 티칭 후)
-# 3) 터치오프로 표면 Z 자동 측정
-ros2 service call /dsr01/touch_off svg_drawing_interfaces/srv/TouchOff "{x_mm: 74, y_mm: 105}"
-# 4) dry_run 없이 저속으로 첫 드로잉
-ros2 service call /dsr01/draw_svg svg_drawing_interfaces/srv/DrawSvg "{svg_path: '/…/mandala.svg'}"
-```
-
-## GUI + 로봇 자동 시퀀스 (scripts/, PersonalitySignature 연동)
-
-`drawing.launch.py`(서비스 방식)와는 별개로, MBTI 문양 생성 GUI에서 바로 로봇을
-움직이는 **두 번째 실행 경로**가 `scripts/` 아래에 있습니다. 조작 절차는
-[사용설명서.md](사용설명서.md)를 보고, 여기서는 구조만 설명합니다.
-
-```
-브라우저(personality_signature.html, React)
-   │  fetch("http://127.0.0.1:8787/...")
-   ▼
-scripts/gui_bridge_server.py   (표준 라이브러리 http.server만 사용, 외부 의존성 0)
-   │  subprocess.Popen(..., start_new_session=True)   ← 자식까지 한 프로세스 그룹으로 묶음
-   ▼
-scripts/run_signature_sequence.py   (오케스트레이터)
-   │  각 단계를 독립 서브프로세스로 순차 호출, 하나라도 실패하면 즉시 중단
-   ├─ run_drl_motion.py --motion pen_up     (drl_motions.py)
-   ├─ lower_to_paper.py --svg <문양 SVG>     (아크릴에 실제로 그리기)
-   ├─ run_drl_motion.py --motion pen_down
-   ├─ run_drl_motion.py --motion brush
-   └─ run_drl_motion.py --motion grab       (완성 아크릴판 집어서 전달)
-```
-
-**gui_bridge_server.py 엔드포인트**
+### 4-4. gui_bridge_server.py 엔드포인트
 
 | 메서드/경로 | 역할 |
 |---|---|
-| `POST /draw-signature` | body = GUI의 로봇용 폴리라인 JSON(`toRobotJSON()` 출력) → 전체 시퀀스 실행, `{job_id}` 반환 |
-| `POST /draw-sample` | body = `{"sample":"square"\|"hex_spiral"}` → `samples/`의 기존 SVG를 변환 없이 그대로 그림(빠른 테스트용) |
-| `GET /status?job=<id>` | `{state: queued\|running\|done\|error\|stopped, log_tail}` — GUI가 폴링 |
-| `POST /estop` | `emergency_stop.py`로 즉시 정지 명령 전송 + 실행 중 시퀀스 프로세스 그룹 강제 종료 |
-| `POST /go-home` | `go_home.py`로 준비자세 복귀(다른 작업 실행 중이면 409로 거절) |
+| `POST /draw-signature` | body = GUI 문양의 로봇용 폴리라인 JSON → 전체 시퀀스 실행, `{job_id}` 반환 |
+| `POST /draw-sample` | body = `{"sample":"square"\|"hex_spiral"}` → `samples/`의 기존 SVG를 그대로 그림 |
+| `POST /pen-down` | 펜 내려놓기 단독 실행 |
+| `POST /estop` | 즉시 정지 + 실행 중 시퀀스 프로세스 그룹 강제 종료 |
+| `POST /go-home` | 준비자세 복귀(다른 작업 실행 중이면 409로 거절) |
+| `GET /status?job=<id>` | `{state, log_tail, progress:{current,total,percent}}` — GUI가 폴링 |
+| `GET /tcp-info` | 현재 활성 TCP 오프셋(mm) 조회 — TCP 리셋(289→0) 감지용 |
 | `GET /health` | 헬스체크 |
 
-로컬(127.0.0.1) 전용이며 CORS는 전체 허용(로컬 파일/포트에서 브라우저가 바로 fetch 가능하게).
-**실제 로봇을 움직이므로 외부 네트워크에 절대 노출하지 마세요.**
+로컬(127.0.0.1) 전용이며 CORS는 전체 허용. **실제 로봇을 움직이므로 외부 네트워크에
+절대 노출하지 마세요.**
 
-**속도/안전 파라미터**: `run_signature_sequence.py`/`gui_bridge_server.py`의
-`pen-up-speed`/`pen-down-speed`/`brush-speed`/`grab-speed`(모두 1.0=DRL 펜던트 원속도 기준
-배율)와 `plate-size-mm`(아크릴판 한 변, 실제 판보다 크면 안 됨)는 실기에서 검증된 안전값이
-기본값으로 들어 있습니다. 컨트롤러를 재기동했거나 새 로봇/새 컴퓨터에서 처음 쓸 때는
-반드시 낮은 배율로 먼저 검증하세요(컨트롤러 재기동 후 배율이 그대로 적용돼 위험하게
-빨라진 사례가 있었음 — 자세한 경위는 git log 참고).
+---
 
-## 각 모듈 단독 테스트
+## 5. 안전 수칙 (꼭 지킬 것)
+
+1. **그리는 동안 자리를 비우지 마세요.** 이상하면 즉시 GUI [긴급중지] 또는 물리 E-stop.
+2. **아크릴판은 설정된 크기(기본 112.5mm 정사각) 이하**로 준비하세요. 판이 작으면 판
+   밖을 긁을 수 있습니다. 크기를 바꾸려면 브릿지 서버 실행 시 `--plate-size-mm <mm>`.
+3. **처음 켜는 컴퓨터/로봇 조합이면 반드시 시뮬(가상 모드)로 먼저** 전체 시퀀스를 돌려보고,
+   이상 없으면 실장비로 전환하세요.
+4. 각 동작(pen_up/pen_down/brush/grab)의 속도 배율은 실기에서 검증된 안전값이 기본으로
+   들어 있습니다. **임의로 올리지 말고** 필요하면 한 단계씩 눈으로 보며 조정하세요.
+5. **로봇 컨트롤러를 재시작했다면** 기존 속도 배율을 그대로 믿지 말고 저속으로 먼저 검증
+   하세요 — 과거 재기동 직후 배율이 그대로 적용돼 위험하게 빨라진 사례가 있었습니다.
+6. **TCP(펜 오프셋 289mm)가 리셋되면 충돌 위험**이 있습니다 — `lower_to_paper.py`와
+   `run_drl_motion.py` 양쪽에 실행 전 자동 검증(`tcp_check.py`)이 들어 있어, 오프셋이
+   289mm±20mm를 벗어나면 자동으로 동작을 중단합니다. 경고가 뜨면 펜던트에서 TCP를
+   다시 확인하세요.
+
+---
+
+## 6. 터미널에서 직접 그리기
+
+GUI 없이 SVG 한 장만 빠르게 그려보고 싶을 때:
 
 ```bash
-python3 svg_drawing/coordinate_mapper.py     # SVG→A5 매핑 검증
-python3 svg_drawing/trajectory_planner.py    # NN 최적화 검증
-python3 svg_drawing/robot_controller.py      # 좌표변환·통계 검증(dry-run)
-python3 svg_drawing/bezier_sampler.py        # 샘플링 검증
-python3 svg_drawing/svg_parser.py <파일.svg> # 파싱 검증
+source /opt/ros/humble/setup.bash
+source ~/ws_cobot_pjt/ws_dsr/install/setup.bash
+python3 ~/ws_cobot_pjt/ws_dsr/src/svg_drawing/scripts/lower_to_paper.py --svg samples/merkaba.svg
 ```
 
-## 확장 포인트 (객체지향 설계)
+- `--surface-z`(기본 9.5mm)가 이미 알려진 값이라, 실행하면 대화형 하강 없이 바로 그 높이를
+  신뢰하고 준비자세에서 "그릴까요? (y/N)"만 확인한 뒤 그립니다.
+- 표면 높이가 바뀌었다면 `--no-auto-z`로 예전처럼 키보드로 눈으로 잡는 대화형 모드를
+  쓸 수 있습니다(`Enter`=하강, `u`=상승, `z<값>`=그 Z로 점프, `done`=확정, `q`=취소).
 
-- **펜 자동 교체**: `robot_controller` 에 tool-change 시퀀스 메서드 추가.
-- **TCP/Z 캘리브레이션**: 값만 `drawing_params.yaml` 에서 수정.
-- **새 도형/구조 지원**: `svg_parser` 가 svgelements 로 <use>/<defs>/transform/group 을 자동 평탄화.
-- **다른 용지 크기**: `work_area_*` 파라미터만 변경(A4 등).
-- **경로 최적화 고도화**: `trajectory_planner.optimize` 를 2-opt 등으로 교체 가능.
+전체 옵션: `python3 scripts/lower_to_paper.py --help`
+
+---
+
+## 7. 그리기 파이프라인 상세 사양
+
+현재(2026-07-28) `lower_to_paper.py` 기본값 기준입니다. 실기 튜닝값이니 함부로 크게
+바꾸지 말고, 바꿀 땐 한 파라미터씩 검증하세요.
+
+### 7-1. 좌표·크기
+
+| 파라미터 | 값 |
+|---|---|
+| 도안 크기(`--size`) | 100.75mm |
+| 회전(`--rotate-deg`) | 90° |
+| 오프셋(`--off-x` / `--off-y`) | 0.0mm / -10.0mm |
+| 표면 Z(`--surface-z`) | 9.5mm |
+| 점 샘플 간격 | 2.0mm |
+
+### 7-2. TCP 안전 가드
+
+- 사용 툴: `pen`, 오프셋 약 **289mm**(RG2 그리퍼 + 펜 길이).
+- 컨트롤러 재부팅 시 TCP가 플랜지(0mm)로 리셋되는 경우가 있어, 실행 직전
+  `verify_pen_tcp()`가 실측 오프셋을 확인하고 289mm±20mm를 벗어나면 중단합니다.
+
+### 7-3. 힘제어 (하이브리드 위치/힘)
+
+XY는 위치제어(강성 3000, 도형 정확도), Z만 힘제어(표면 추종).
+
+| 파라미터 | 값 | 비고 |
+|---|---|---|
+| 목표 힘(`--force-n`) | **5.7N** | |
+| Z축 강성(`--stiffness-z`) | **20** | 5까지 낮췄을 때 불안정했던 이력 있음 — 20이 검증된 값 |
+| XY·회전 강성 | 3000(고정) | 회전도 3000으로 딱딱하게: 긴 펜(289mm) 지렛대 효과로 인한 팁 흔들림 억제 |
+| 힘 램프 대기(`--force-ramp-wait`) | 2.0초 | 힘제어 ON 후 목표힘 안정될 때까지 그리기 전 대기 |
+| DRL 내부 힘 램프 시간 | 0.1초 | 너무 짧으면 오버슈트 위험 |
+| 접촉(아크릴 유무) 판정 임계값 | 4.8N | 최초 획에서만 검사, 미검출 시 자동 중단+원위치 |
+
+### 7-4. 그리기 속도·가속도·블렌드
+
+| 파라미터 | 값 |
+|---|---|
+| 그리기 속도(힘제어) | 13.21mm/s |
+| 그리기 가속도(힘제어) | 50.26mm/s² |
+| 이동(펜업) 속도/가속도 | 51.0mm/s / 255.0mm/s² |
+| 기본 블렌드 반경 | 0.8mm(진짜 코너용) |
+| 최대 블렌드 반경(완만한 곡선) | 4.0mm |
+| 코너 판정 각도 | 25° 이상이면 "진짜 코너"로 좁게 유지 |
+| RDP 점 단순화 허용오차 | 0.15mm |
+| 획 연장 비율 | 1.5%(마지막 진행 방향으로 직선 연장) |
+| 시작/끝 슬로우존 | 각 12mm(거리 기준), 40% 속도 |
+
+**곡선이 느린 이유와 해결**: 곡선은 촘촘한 점마다 계속 꺾여 매번 감속·재가속을
+반복해서 느립니다. RDP로 불필요한 중간점을 없애 세그먼트를 길게 만들고, 완만한
+지점은 블렌드 반경을 키워(최대 4mm) 더 빠르게 코너를 통과하되, 진짜 뾰족한
+꼭짓점(25° 이상)은 0.8mm로 좁게 유지해 도형이 뭉개지지 않게 했습니다.
+
+### 7-5. 그리퍼(OnRobot RG2)
+
+신호 방식: Doosan 디지털 출력(DO1~DO5) → OnRobot WebLogic 룰 매핑
+(`http://192.168.1.1/#/weblogic`).
+
+| DO 신호 | 결과 |
+|---|---|
+| DO1=1 | 96mm(열림) |
+| DO2=1 | 0mm(파지) |
+| DO3=1 | 40mm |
+| DO1+DO2 동시=1(rule#4) | 5mm — DO4·DO5 미배선이라 이 조합으로 대체 |
+
+파지 시 신호 순서(DO1/3/4 먼저 끄고 DO2 마지막에 켜기)가 중요합니다 — 반대 순서면
+순간적으로 5mm 룰이 잘못 걸려 간헐적으로 오동작합니다. `set_digital_output` 반환값도
+확인해 실패 시 재시도합니다(`_do()` 래퍼).
+
+| grab 단계 | 대기시간 |
+|---|---|
+| 파지 후(들어올리기 전) | 2.5초 |
+| 놓기 전 | 1.0초 |
+| 놓은 후 | 5.0초 |
+
+---
+
+## 8. 샘플 도안 (`samples/`)
+
+| 파일 | 획 수 | 설명 |
+|---|---|---|
+| `merkaba.svg` | 5 | 별사면체(메르카바) — 정삼각형 2개 + 안쪽 사면체, 좌우대칭 정확히 검증됨 |
+| `hex_spiral.svg` | 9 | 육각별 나선 — 매 층 30°회전·0.866배 축소로 꼭짓점이 항상 이전 육각형에 정확히 닿음 |
+| `hex_spiral_full.svg` | 44 | hex_spiral의 원본(단순화 전) 버전, 보존용 |
+| `square.svg` | - | 기본 동작 검증용 사각형 |
+| 그 외 | - | `mandala2`, `entj_star`, `tiger*` 등 초기 개발용 샘플 |
+
+GUI 인트로 화면의 "샘플: 사각형 / hex_spiral" 버튼이 이 파일들을 직접 참조합니다.
+내 SVG를 추가하려면 `samples/`에 넣고 `--svg` 옵션(터미널) 또는
+`gui_bridge_server.py`의 `SAMPLE_SVGS` 딕셔너리(GUI 버튼)에 경로를 등록하면 됩니다.
+
+---
+
+## 9. 문제 해결 (FAQ)
+
+**Q. GUI에서 버튼을 눌러도 반응이 없어요**
+→ 터미널 B(브릿지 서버)가 켜져 있는지 확인. 브라우저에서
+`http://127.0.0.1:8787/health`가 `{"status":"ok"}`를 안 주면 서버부터 켤 것.
+
+**Q. `Cannot use import statement outside a module` 에러가 떠요**
+→ GUI는 번들러 없이 브라우저에서 즉석 변환 후 실행하는 방식이라 jsx 소스에
+`import`/`export` 문이 있으면 안 됩니다. `PersonalitySignature_spiral.jsx` 최상단이
+`const { useState, ... } = React;`로, 맨 끝 컴포넌트 정의가 `function
+PersonalitySignature() {`(export 없이)로 되어 있는지 확인하세요.
+
+**Q. `The passed service type is invalid` / import 에러 (터미널)**
+→ 그 터미널에서 ROS2 소싱 2줄을 안 한 것입니다. 새 터미널마다 항상:
+```bash
+source /opt/ros/humble/setup.bash
+source ~/ws_cobot_pjt/ws_dsr/install/setup.bash
+```
+
+**Q. 그리퍼가 가끔 아크릴을 못 잡아요**
+→ DO 신호 순서/대기시간 문제였던 이력이 있습니다(이미 수정됨 — `drl_motions.py`의
+`_grab_grasp()` 참고). 여전히 발생하면 파지 후 대기(현재 2.5초)를 더 늘려보세요.
+
+**Q. 곡선이 직선보다 훨씬 느려요**
+→ 블렌드 반경이 작을수록 코너 감속이 커지는 구조적 특성입니다. [7-4](#7-4-그리기-속도가속도블렌드)의
+적응형 블렌드가 이미 완화하고 있지만, 여전히 느리면 `draw_blend_radius_max_mm`을
+올려보세요(`svg_drawing/robot_controller.py`, 코너가 부풀면 다시 낮출 것).
+
+**Q. 로봇이 표면에 안 닿거나 너무 세게 눌러요**
+→ `--surface-z` 값이 실제 표면과 다를 수 있습니다. `--no-auto-z`로 대화형 모드를 켜서
+키보드로 다시 표면을 잡으세요.
+
+**Q. TCP 검증 경고가 떠요**
+→ 컨트롤러 재부팅 등으로 활성 TCP가 `pen`(289mm)에서 플랜지(0mm)로 바뀐 것입니다.
+펜던트에서 TCP를 `pen`으로 다시 선택하세요. 하드코딩된 좌표로 그대로 움직이면 충돌
+위험이 있어 자동 중단하도록 되어 있습니다.
+
+**Q. 다른 컴퓨터 브라우저에서 GUI를 열었더니 로봇 연동 버튼이 안 돼요**
+→ 브릿지 서버는 `127.0.0.1`(같은 컴퓨터) 전용입니다. **로봇을 제어하는 바로 그
+컴퓨터에서** GUI를 열어야 합니다.
+
+---
+
+## 10. 개발 참고
+
+- `scripts/`의 파일들은 `svg_drawing` 패키지 밖의 독립 스크립트라 **colcon 빌드가
+  필요 없습니다**(수정 후 바로 `python3 scripts/파일명.py`). `svg_drawing/` 패키지
+  내부 모듈(`robot_controller.py` 등)도 `scripts/`와 같은 상위 폴더에서 실행하면 상대
+  경로 import로 소스가 바로 반영되어 마찬가지로 빌드가 필요 없습니다.
+- 각 모듈 단독 테스트:
+  ```bash
+  python3 svg_drawing/coordinate_mapper.py     # SVG→mm 매핑 검증
+  python3 svg_drawing/trajectory_planner.py    # 획 순서 최적화 검증
+  python3 svg_drawing/robot_controller.py      # 좌표변환·통계 검증(dry-run)
+  python3 svg_drawing/bezier_sampler.py        # 샘플링/RDP 단순화 검증
+  ```
+- 로봇 IP `192.168.1.100`, 그리퍼(WebLogic) IP `192.168.1.1` — 컴퓨터/로봇 조합이
+  다르면 `ros2 launch` 명령의 `host:=` 값을 바꾸세요.
+- ROS2 서비스 방식(`drawing.launch.py` + `/dsr01/draw_svg`)도 `svg_drawing_interfaces`에
+  정의돼 있지만, 실사용은 위 GUI/스크립트 경로가 표준입니다.
+- 오늘까지의 상세 변경 이력(문제 상황·원인·해결)은 [`CHANGELOG_2026-07-28.md`](CHANGELOG_2026-07-28.md),
+  이전 이력은 [`CHANGELOG_2026-07-23.md`](CHANGELOG_2026-07-23.md) 참고.

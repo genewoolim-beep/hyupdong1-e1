@@ -66,19 +66,43 @@ class DrlMotions:
     def _movel_p(self, *x, radius: float = 0.0):
         self._movel(self._posx(*x), radius=radius, ref=0, mod=self._MOD_ABS, ra=self._RA_DUP)
 
+    def _do(self, index: int, val: int, retries: int = 2):
+        """set_digital_output 은 서비스 호출 실패 시 -1 을 반환하는데, 지금까지 그 반환값을
+        아무데서도 확인하지 않아 실패해도 조용히 넘어가고 팔은 계획대로 계속 움직였다
+        (그리퍼만 무반응인 채로 grab 이 끝까지 진행되는 사고의 원인). 여기서 반환값을 확인해
+        실패 시 경고를 찍고 짧게 재시도한다."""
+        for attempt in range(1 + retries):
+            ret = self._set_digital_output(index, val)
+            if ret is None or ret == 0:
+                return
+            if attempt < retries:
+                print(f"[경고] set_digital_output(index={index}, val={val}) 실패(ret={ret})"
+                      f" — 재시도 {attempt + 1}/{retries}")
+                self._wait(0.1)
+            else:
+                print(f"[경고] set_digital_output(index={index}, val={val}) 실패(ret={ret})"
+                      f" — 재시도 소진, 그리퍼가 이 신호를 못 받았을 수 있음")
+
     # ── m0609_grab.drl 의 grasp/release (핀 1/2 조합) ──
     def _grab_grasp(self):
-        self._set_digital_output(2, 1)
-        self._set_digital_output(1, 0)
-        self._set_digital_output(3, 0)
-        self._set_digital_output(4, 0)
-        self._wait(1.0)
+        # 신호 전환 순서 주의: 파지 직전 상태는 _grab_release() 라 DO1=1(96mm 열림)이다.
+        # 여기서 DO2 를 먼저 켜면 순간적으로 DO1=1·DO2=1(=WebLogic rule#4=1100=5mm)이 잡혀
+        # 그리퍼가 5mm 로 갔다가 다시 닫히는 '천천히 닫힘/다른 동작'이 간헐적으로 발생한다.
+        # → 충돌 신호(DO1/3/4)를 먼저 0 으로 내리고 마지막에 DO2 만 1 로 올려 0mm 파지 룰만
+        #    깔끔히 트리거한다(_pen_grasp 과 동일한 순서).
+        self._do(1, 0)
+        self._do(3, 0)
+        self._do(4, 0)
+        self._do(2, 1)
+        self._wait(2.5)  # RG2 가 96mm→0mm 완전히 닫혀 아크릴을 물 때까지(들어올리기 전) 넉넉히.
+                         # 1.5→2.5: 그리퍼가 가끔 느리게 닫혀 들어올리기 전에 다 안 물린 채로
+                         # 넘어가는 경우가 있어 1초 더 여유를 줌.
 
     def _grab_release(self):
-        self._set_digital_output(1, 1)
-        self._set_digital_output(2, 0)
-        self._set_digital_output(3, 0)
-        self._set_digital_output(4, 0)
+        self._do(1, 1)
+        self._do(2, 0)
+        self._do(3, 0)
+        self._do(4, 0)
         self._wait(1.0)
 
     def _grab_release_5mm(self):
@@ -87,25 +111,25 @@ class DrlMotions:
         # 대신 WebLogic 에 rule #4 를 입력조합 IN1=1 AND IN2=1(1 1 0 0…) → Width 5mm 로 등록하고,
         # 여기서 DO1·DO2 를 동시에 1로 켜서 그 룰을 트리거한다(작동하는 라인만 조합 → 배선 불필요).
         # ※ 실제 폭 5mm 는 WebLogic rule #4 의 Width 값으로 결정됨(코드가 아니라).
-        self._set_digital_output(1, 1)
-        self._set_digital_output(2, 1)
-        self._set_digital_output(3, 0)
-        self._set_digital_output(4, 0)
-        self._set_digital_output(5, 0)
+        self._do(1, 1)
+        self._do(2, 1)
+        self._do(3, 0)
+        self._do(4, 0)
+        self._do(5, 0)
         # 내부 대기 없음 — 놓은 후 대기는 grab_motion 에서 명시적으로 준다(정확한 시간 제어).
 
     # ── m0609_pen_down/pen_up/brush.drl 공용 grasp/release (핀 2/3 조합) ──
     def _pen_grasp(self):
-        self._set_digital_output(4, 0)
-        self._set_digital_output(1, 0)
-        self._set_digital_output(3, 0)
-        self._set_digital_output(2, 1)
+        self._do(4, 0)
+        self._do(1, 0)
+        self._do(3, 0)
+        self._do(2, 1)
 
     def _pen_release(self):
-        self._set_digital_output(3, 1)
-        self._set_digital_output(2, 0)
-        self._set_digital_output(4, 0)
-        self._set_digital_output(1, 0)
+        self._do(3, 1)
+        self._do(2, 0)
+        self._do(4, 0)
+        self._do(1, 0)
 
     # ── m0609_grab.drl ──
     def grab_motion(self, skip_ready: bool = False):

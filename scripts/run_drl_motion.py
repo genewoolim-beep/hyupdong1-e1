@@ -31,7 +31,7 @@ import sys
 import rclpy
 import DR_init
 
-from drl_motions import DrlMotions, MOTIONS
+from drl_motions import DrlMotions, MOTIONS, PenGraspError
 from tcp_check import verify_pen_tcp
 
 
@@ -162,6 +162,8 @@ def main():
         posj=lambda *a: a, posx=lambda *a: a,
         DR_AVOID=DR_AVOID, DR_MV_MOD_ABS=DR_MV_MOD_ABS,
         DR_MV_RA_DUPLICATE=DR_MV_RA_DUPLICATE,
+        verify_pen_grasp=False,  # 더미라 실제로 그리퍼를 안 움직임 — Modbus 로 "현재 실제
+                                  # 그리퍼 상태"를 읽으면 미리보기 단계에서 엉뚱하게 실패한다.
     )
     getattr(dummy, MOTIONS[args.motion].__name__)()
     z_values = [pose[2] for pose in preview_targets]
@@ -189,13 +191,22 @@ def main():
 
     print(f"[시작] motion={args.motion} loop={args.loop} speed_scale={args.speed_scale} "
           f"robot_id={args.robot_id} model={args.model}")
-    for i in range(args.loop):
-        print(f"  [{i + 1}/{args.loop}] {args.motion} 실행...")
-        if args.motion == 'grab' and args.skip_ready_movej:
-            run(skip_ready=True)
-        else:
-            run()
-    print("[완료]")
+    try:
+        for i in range(args.loop):
+            print(f"  [{i + 1}/{args.loop}] {args.motion} 실행...")
+            if args.motion == 'grab' and args.skip_ready_movej:
+                run(skip_ready=True)
+            else:
+                run()
+        print("[완료]")
+    except PenGraspError as e:
+        # gui_bridge_server.py 가 로그에서 이 마커 문자열을 찾아 "재시작" 버튼을 띄운다.
+        # 어느 motion 에서 실패했는지(pen_up/brush)를 마커에 포함 — GUI 가 pen_up 실패면
+        # 전체 재시작을, brush 실패면 "brush 부터 이어서 재시작"을 하도록 구분해야 해서.
+        print(f"[PEN_GRASP_FAILED:{args.motion}] {e}")
+        dsr_node.destroy_node()
+        rclpy.shutdown()
+        sys.exit(2)
 
     dsr_node.destroy_node()
     rclpy.shutdown()

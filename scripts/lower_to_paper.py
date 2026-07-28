@@ -71,8 +71,8 @@ def parse_args():
     ap.add_argument('--start-z', type=float, default=340.0,
                     help='홈에서 이 Base Z(mm)까지 적당한 속도로 먼저 이동 후 키보드 미세조정. '
                          '기본 340mm(표면 74~100보다 훨씬 위라 안전). 블라인드 이동 끄려면 큰 값(예: 9999)')
-    ap.add_argument('--surface-z', type=float, default=9.5,
-                    help='표면 Z(mm). 기본 9.5mm(10.0에서 0.5mm 낮춤 — 초반부터 더 눌러 힘이 빨리 붙게). '
+    ap.add_argument('--surface-z', type=float, default=9.2,
+                    help='표면 Z(mm). 기본 9.2mm(9.5→9.2). '
                          '대화형 하강(Enter/step/키보드) 전부 생략하고 '
                          '홈에서 바로 이 높이로 이동해 표면으로 확정, 곧장 그리기 시작. '
                          '⚠ 검증 없이 그대로 내려가니 값이 틀리면 위험(펜 박힘/뜸). '
@@ -115,8 +115,8 @@ def parse_args():
     ap.add_argument('--press-mm', type=float, default=0.25,
                     help='(위치제어) 측정 표면보다 이만큼 더 눌러 긋는다(mm) = 일정 깊이=일정 압력 효과. '
                          '기본 0.25mm. 연하면 0.3~0.5 올리고, 과하면 0.15/0.1 로')
-    ap.add_argument('--force-n', type=float, default=5.7,
-                    help='아크릴을 누르는 목표 힘(N). 기본 5.7N(6.0→5.7). --force 로 켜면 이 힘으로 Fz 유지')
+    ap.add_argument('--force-n', type=float, default=5.8,
+                    help='아크릴을 누르는 목표 힘(N). 기본 5.8N(5.7→5.8). --force 로 켜면 이 힘으로 Fz 유지')
     ap.add_argument('--force-sign', type=float, default=-1.0,
                     help='누르는 방향 부호. -1=Base -Z(아래로). 설치 자세에 맞춰 조정')
     ap.add_argument('--stiffness-z', type=float, default=20.0,
@@ -124,7 +124,7 @@ def parse_args():
                          '기본 20(적당값 — 5까지 낮췄더니 툴이 떠서 불안정해 원래값으로 복귀). '
                          '더 힘 우선 원하면 10, 튀면 30~100. XY·회전은 3000 고정')
     ap.add_argument('--draw-vel', type=float, default=None,
-                    help='그리기 속도(mm/s). 미지정 시 힘제어=13.21, 위치제어=37.62. 표면 울퉁불퉁하면 '
+                    help='그리기 속도(mm/s). 미지정 시 힘제어=10.57, 위치제어=37.62. 표면 울퉁불퉁하면 '
                          '힘제어에서 더 낮추기(예: 5). 힘 루프가 요철 따라가려면 느려야 함')
     ap.add_argument('--draw-acc', type=float, default=None,
                     help='그리기 가속도(mm/s^2). 미지정 시 힘제어=78.54, 위치제어=150')
@@ -424,13 +424,14 @@ def draw_svg_at_surface(args, surface_z: float, home):
         approach_height_mm=surface_z + 5.0,       # 시작점 위 접근
         travel_height_mm=surface_z + args.pen_up, # 획 사이 펜업(작게)
         tool_rx_deg=rx, tool_ry_deg=ry, tool_rz_deg=rz,   # 현재 자세 유지
-        # 힘제어 16.51→13.21mm/s(-20%). 가속도는 한때 62.83→31.4(-50%, 하드정지 지점
-        # 오버슈트 완화용)로 낮췄다가 원래대로 복귀(전역으로 낮추면 코너 많은 곡선마다
-        # 재가속이 느려져 "곡선이 너무 느림"으로 나타났었음) → 이제 곡선 구간은 적응형
-        # 블렌드(draw_blend_radius_max_mm)가 코너 감속을 따로 완화해주니, 전역 가속도는
+        # 힘제어 16.51→13.21→10.57mm/s(추가 -20%, 시작/끝 슬로우존 말고 순항 구간이
+        # 너무 빠르다는 피드백). 가속도는 한때 62.83→31.4(-50%, 하드정지 지점 오버슈트
+        # 완화용)로 낮췄다가 원래대로 복귀(전역으로 낮추면 코너 많은 곡선마다 재가속이
+        # 느려져 "곡선이 너무 느림"으로 나타났었음) → 이제 곡선 구간은 적응형 블렌드
+        # (draw_blend_radius_max_mm)가 코너 감속을 따로 완화해주니, 전역 가속도는
         # 62.83→50.26(-20%)로 다시 살짝 낮춰도 곡선 체감 속도에 영향이 적다.
         draw_vel_mm_s=(args.draw_vel if args.draw_vel is not None
-                       else (13.21 if args.force else 37.62)),
+                       else (10.57 if args.force else 37.62)),
         draw_acc_mm_s2=(args.draw_acc if args.draw_acc is not None
                         else (50.26 if args.force else 120.0)),
         # 획 사이 이동(펜업 상태) 60/300→51/255(-15%)로 같이 낮춤.

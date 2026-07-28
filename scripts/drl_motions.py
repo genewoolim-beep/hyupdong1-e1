@@ -19,6 +19,15 @@ from __future__ import annotations
 
 from typing import Callable
 
+import gripper_modbus
+
+
+class PenGraspError(Exception):
+    """pen_up/brush 가 펜을 집으려 했는데 실제로는 못 집은 것으로 판단될 때(그리퍼가
+    펜 두께만큼 벌어지지 않고 거의 완전히 오므라짐). 이 예외가 나올 때쯤엔 이미
+    그리퍼를 열고 준비자세로 복귀까지 마친 상태다 — 호출부는 잡고 재시작 여부만
+    사용자에게 물으면 된다."""
+
 
 class DrlMotions:
     """connect() 이후 확보한 DSR_ROBOT2 함수들을 들고 각 모션을 실행."""
@@ -28,7 +37,7 @@ class DrlMotions:
                  set_velx: Callable, set_accx: Callable,
                  set_digital_output: Callable, set_singular_handling: Callable,
                  posj, posx, DR_AVOID, DR_MV_MOD_ABS, DR_MV_RA_DUPLICATE,
-                 speed_scale: float = 1.0):
+                 speed_scale: float = 1.0, verify_pen_grasp: bool = True):
         self._movej = movej
         self._movel = movel
         self._wait = wait
@@ -44,6 +53,12 @@ class DrlMotions:
         self._MOD_ABS = DR_MV_MOD_ABS
         self._RA_DUP = DR_MV_RA_DUPLICATE
         self._speed_scale = speed_scale  # DRL 원본 속도 대비 배율(예: 0.1 = 10% 속도)
+        # False면 _verify_pen_grasped_or_recover 가 아무 것도 안 하고 넘어간다 — Z값
+        # 미리보기용 더미 인스턴스(movel/set_digital_output 등이 전부 no-op)에서 이 값을
+        # 꺼야 한다. 안 그러면 더미는 실제로 그리퍼를 안 움직였는데도 Modbus로 "현재
+        # 실제 그리퍼 상태"를 읽어버려, 미리보기 단계에서 엉뚱하게 PenGraspError 가 나며
+        # 죽는다(실제 로봇 동작을 하나도 안 했는데 실패로 뜨는 버그였음).
+        self._verify_pen_grasp = verify_pen_grasp
 
     # ── 공통: DRL 상단부의 set_singular_handling/set_velj/accj/velx/accx ──
     #    (DRL 원본 값 * speed_scale)
@@ -131,6 +146,36 @@ class DrlMotions:
         self._do(4, 0)
         self._do(1, 0)
 
+    def _verify_pen_grasped_or_recover(self, ready_pose: tuple, item: str = "펜"):
+        """_pen_grasp() 직후 호출. 그리퍼가 대상(펜/브러쉬 약 2.5cm)만큼 안 벌어지고 거의
+        완전히 오므라들었으면(Modbus 폭이 임계 미만) 못 집은 것으로 보고, 그리퍼를 열고
+        ready_pose 로 복귀한 뒤 PenGraspError 를 던진다. 호출부(오케스트레이터/GUI)가 이걸
+        잡아 사용자에게 재시작 여부를 물으면 된다.
+        Modbus 로 판단이 안 될 때(None, 네트워크/장비 문제)는 그리퍼 이상만으로 매번
+        멈추면 더 나쁠 수 있어 경고만 찍고 그냥 진행한다."""
+        if not self._verify_pen_grasp:
+            return
+        # [진단] 대상을 잡은 이 순간의 후보 레지스터 값을 전부 로그로 남긴다 — 어느
+        # 레지스터가 '실제 폭(대상 25mm)'을 보여주는지 확정하는 용도. pen/brush 구분해서 찍음.
+        dump = gripper_modbus.read_registers(gripper_modbus.CANDIDATE_REGISTERS)
+        print(f"[진단:{item}] 잡은 순간 그리퍼 레지스터: {dump}")
+        if gripper_modbus.DIAGNOSTIC_LOG_ONLY:
+            print("[진단] DIAGNOSTIC_LOG_ONLY=True — 실패 판정 안 하고 그대로 진행합니다.")
+            return
+        grasped = gripper_modbus.pen_is_grasped()
+        if grasped is None:
+            print("[경고] 그리퍼 폭 확인 실패(Modbus 응답 없음) — 판단 못 하고 계속 진행")
+            return
+        if grasped:
+            return
+        print(f"[에러] {item}을(를) 못 집은 것으로 판단됨(그리퍼가 거의 완전히 오므라듦) — "
+              "그리퍼를 열고 준비자세로 복귀합니다.")
+        self._pen_release()
+        self._wait(1.0)
+        self._movej_p(*ready_pose)
+        raise PenGraspError(
+            f"{item}을(를) 집지 못했습니다. 제자리에 있는지 확인하고 재시작하세요.")
+
     # ── m0609_grab.drl ──
     def grab_motion(self, skip_ready: bool = False):
         # skip_ready=True: brush 바로 다음에 이어서 실행할 때만 사용. brush 가 정확히
@@ -196,6 +241,7 @@ class DrlMotions:
         self._pen_grasp()
         self._wait(1.0)  # 원본 DRL엔 없음: grasp 직후 바로 movel 이 시작돼 그리퍼가
                           # 물리적으로 닫히기 전에 팔이 먼저 올라가는 문제 방지(좌표는 그대로)
+        self._verify_pen_grasped_or_recover((-0.02, -0.05, 90.15, 0.01, 89.22, 0.04))
         self._movel_p(313.84, -283.52, 172.12, 89.87, -136.08, 91.85, radius=20.0)
         self._movel_p(314.19, -105.41, 256.82, 89.55, -136.00, 91.49)
         self._movej_p(-0.02, -0.05, 90.15, 0.01, 89.22, 0.04)
@@ -211,6 +257,7 @@ class DrlMotions:
         self._pen_grasp()
         self._wait(1.0)  # pen_up 과 동일: grasp 직후 바로 움직이면 그리퍼가 물리적으로
                           # 닫히기 전에 팔이 먼저 움직여 붓을 놓칠 수 있어 대기(좌표는 그대로)
+        self._verify_pen_grasped_or_recover((0.00, 0.00, 90.00, 0.00, 90.00, 0.00), item="브러쉬")
         R = 15.0
         self._movel_p(381.50, -239.95, 240.43, 88.49, -178.01, 89.36, radius=R)
         self._movel_p(296.13, -45.54, 231.87, 93.85, -178.08, 94.60, radius=R)

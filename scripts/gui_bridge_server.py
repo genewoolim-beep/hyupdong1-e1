@@ -19,6 +19,8 @@ HTTP POST → 서버가 run_signature_sequence.py를 실행하는 다리 역할.
                               ② 실행 중인 시퀀스 프로세스(자식 포함) 전체 종료(다음 단계로 못 넘어가게)
     POST /go-home           → go_home.py로 준비자세 복귀(다른 작업 실행 중이면 거절)
     POST /pen-down          → run_drl_motion.py --motion pen_down 실행(펜 내려놓기)
+    POST /resume-brush      → brush→grab만 이어서 실행(그리기 재실행 없음). brush 에서
+                             펜/브러쉬를 못 잡아 실패했을 때 재시작용(도안 body 불필요)
     GET  /tcp-info          → 현재 활성 TCP 오프셋 길이(mm) 등 {ok,name,len_mm,dz_mm,tcp_z}
                              (이름 대신 '길이'로 보여줘서 TCP 리셋을 GUI에서 감지)
     GET  /health            → {status: "ok"}
@@ -64,15 +66,22 @@ CONFIG = {'plate_size_mm': 112.5,
          'pen_up_speed': 0.506, 'pen_down_speed': 0.595, 'brush_speed': 0.6375, 'grab_speed': 0.85}
 
 
-def _run_job(job_id: str, strokes_json_path: str = None, svg_path: str = None):
+def _run_job(job_id: str, strokes_json_path: str = None, svg_path: str = None,
+            resume_from_brush: bool = False):
     """strokes_json_path(임시 파일, 끝나면 삭제) 또는 svg_path(기존 샘플 SVG, 안 지움)
-    둘 중 하나로 run_signature_sequence.py 를 실행한다."""
+    둘 중 하나로 run_signature_sequence.py 를 실행한다.
+    resume_from_brush=True 면 그리기(pen_up/draw/pen_down)를 전부 생략하고 brush→grab만
+    이어서 실행 — brush 에서 펜/브러쉬를 못 잡아 실패했을 때, 이미 다 그려진 판을 처음부터
+    다시 그리지 않고 재개하는 용도라 svg/strokes 가 필요 없다."""
     with JOBS_LOCK:
         JOBS[job_id]['state'] = 'running'
     CURRENT_JOB_ID[0] = job_id
-    log_path = (strokes_json_path or svg_path) + '.log'
+    log_path = os.path.join(SCRIPT_DIR, f'.job_{job_id}.log') if resume_from_brush \
+        else (strokes_json_path or svg_path) + '.log'
     cmd = [sys.executable, os.path.join(SCRIPT_DIR, 'run_signature_sequence.py')]
-    if svg_path:
+    if resume_from_brush:
+        cmd += ['--start-from', 'brush']
+    elif svg_path:
         cmd += ['--svg-path', svg_path]
     else:
         cmd += ['--strokes-json', strokes_json_path]
@@ -266,6 +275,16 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == '/pen-down':
             result = _pen_down()
             self._json(200 if result['ok'] else 409, result)
+            return
+        if self.path == '/resume-brush':
+            # brush 에서 펜/브러쉬를 못 잡아 실패했을 때 쓰는 전용 재시작 — 그리기를
+            # 다시 안 하고 brush→grab만 이어서 실행(도안 body 불필요).
+            job_id = uuid.uuid4().hex[:12]
+            with JOBS_LOCK:
+                JOBS[job_id] = {'state': 'queued'}
+            threading.Thread(target=_run_job, args=(job_id,),
+                             kwargs={'resume_from_brush': True}, daemon=True).start()
+            self._json(202, {'job_id': job_id})
             return
         if self.path == '/draw-sample':
             length = int(self.headers.get('Content-Length', '0') or '0')

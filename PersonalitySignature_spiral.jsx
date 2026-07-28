@@ -1051,7 +1051,10 @@ function PersonalitySignature() {
   // pen_up → 아크릴 드로잉 → pen_down → brush → grab 시퀀스 실행을 요청한다.
   // 브릿지 서버가 안 떠있으면 fetch 자체가 실패하므로 그 경우를 안내 메시지로 구분.
   const ROBOT_BRIDGE_URL = "http://localhost:8787";
+  // 실패(펜 못 집음 등) 후 [재시작]이 방금과 똑같은 요청을 그대로 다시 보낼 수 있게 기억해둔다.
+  const lastRequestRef = useRef(null);
   const sendDrawRequest = async (endpoint, bodyJson) => {
+    lastRequestRef.current = { endpoint, bodyJson };
     setRobotJob({ id: null, state: "starting", log_tail: "" });
     try {
       const res = await fetch(`${ROBOT_BRIDGE_URL}${endpoint}`, {
@@ -1092,6 +1095,19 @@ function PersonalitySignature() {
   // (브릿지 서버가 파일을 변환 없이 그대로 사용 — square.svg, hex_spiral.svg).
   const drawSample = (name) =>
     sendDrawRequest("/draw-sample", JSON.stringify({ sample: name }));
+
+  // 펜/브러쉬를 못 집어 실패했을 때 [재시작] 버튼이 호출.
+  // - brush 에서 실패: 이미 그리기(pen_up→그리기→pen_down)까지 끝난 뒤라, 처음부터 다시
+  //   그리면 이미 그려진 판에 중복으로 그리게 된다 → /resume-brush 로 brush→grab만 재개.
+  // - 그 외(pen_up 등) 실패: 아직 아무 것도 안 됐으니 방금과 같은 요청을 처음부터 재실행.
+  const retryLastJob = () => {
+    const failedAtBrush = (robotJob?.log_tail || "").includes("PEN_GRASP_FAILED:brush");
+    if (failedAtBrush) {
+      sendDrawRequest("/resume-brush", "");
+    } else if (lastRequestRef.current) {
+      sendDrawRequest(lastRequestRef.current.endpoint, lastRequestRef.current.bodyJson);
+    }
+  };
 
   const robotBusy = robotJob && ["starting", "queued", "running"].includes(robotJob.state);
 
@@ -1265,9 +1281,18 @@ function PersonalitySignature() {
                   {robotJob.state === "error" && (
                     (robotJob.log_tail || "").includes("아크릴판이 감지되지")
                       ? "⚠ 아크릴판이 감지되지 않았습니다. 원위치로 복귀했어요. 판을 제자리에 놓고 다시 눌러주세요."
+                      : (robotJob.log_tail || "").includes("PEN_GRASP_FAILED:brush")
+                      ? "⚠ 브러쉬를 못 집었습니다. 원위치로 복귀했어요. 브러쉬가 제자리에 있는지 확인하고 재시작을 누르면 brush부터 이어서 진행합니다(그리기는 다시 안 함)."
+                      : (robotJob.log_tail || "").includes("PEN_GRASP_FAILED")
+                      ? "⚠ 펜을 못 집었습니다. 원위치로 복귀했어요. 펜이 제자리에 있는지 확인하고 재시작을 눌러주세요."
                       : `실패: ${robotJob.log_tail || "알 수 없는 오류"}`)}
                   {robotJob.state === "stopped" && `긴급중지됨: ${robotJob.log_tail || ""}`}
                 </p>
+              )}
+              {robotJob && robotJob.state === "error" && (
+                <div style={{ textAlign: "center", marginTop: 6 }}>
+                  <button className="ps-btn ps-primary" onClick={retryLastJob}>재시작</button>
+                </div>
               )}
               {robotJob && robotJob.state === "running" && robotJob.progress && (
                 <div className="ps-bar-track" style={{ marginTop: 6 }}>
@@ -1431,9 +1456,18 @@ function PersonalitySignature() {
                 {robotJob.state === "error" && (
                   (robotJob.log_tail || "").includes("아크릴판이 감지되지")
                     ? "⚠ 아크릴판이 감지되지 않았습니다. 원위치로 복귀했어요. 판을 제자리에 놓고 [로봇으로 그리기]를 다시 눌러주세요."
+                    : (robotJob.log_tail || "").includes("PEN_GRASP_FAILED:brush")
+                    ? "⚠ 브러쉬를 못 집었습니다. 원위치로 복귀했어요. 브러쉬가 제자리에 있는지 확인하고 재시작을 누르면 brush부터 이어서 진행합니다(그리기는 다시 안 함)."
+                    : (robotJob.log_tail || "").includes("PEN_GRASP_FAILED")
+                    ? "⚠ 펜을 못 집었습니다. 원위치로 복귀했어요. 펜이 제자리에 있는지 확인하고 재시작을 눌러주세요."
                     : `실패: ${robotJob.log_tail || "알 수 없는 오류"}`)}
                 {robotJob.state === "stopped" && `긴급중지됨: ${robotJob.log_tail || ""}`}
               </p>
+            )}
+            {robotJob && robotJob.state === "error" && (
+              <div style={{ textAlign: "center", marginTop: 6 }}>
+                <button className="ps-btn ps-primary" onClick={retryLastJob}>재시작</button>
+              </div>
             )}
             {robotJob && robotJob.state === "running" && robotJob.progress && (
               <div className="ps-bar-track" style={{ maxWidth: 300, margin: "6px auto 0" }}>

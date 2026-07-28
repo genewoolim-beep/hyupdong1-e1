@@ -86,6 +86,12 @@ def parse_args():
                     help='디버그용: pen_up/pen_down 생략(이미 펜을 쥐고 있을 때)')
     ap.add_argument('--skip-brush-grab', action='store_true',
                     help='디버그용: brush/grab 생략(그리기만 테스트할 때)')
+    ap.add_argument('--start-from', choices=['pen_up', 'brush'], default='pen_up',
+                    help='어느 단계부터 시작할지. 기본 pen_up(처음부터 전체). '
+                         '"brush" 는 pen_up/그리기/pen_down 을 전부 생략하고 brush→grab만 '
+                         '실행 — brush 에서 못 잡아 실패했을 때, 이미 다 그려진 판을 다시 '
+                         '그리지 않고 이어서 재시작하는 용도(이 경우 --svg-path/--strokes-json '
+                         '불필요)')
     ap.add_argument('--step-delay-s', type=float, default=0.2,
                     help='단계(서브프로세스) 사이 대기(초). 2.0→0.5→0.2로 단축 — '
                          '너무 줄이면 rclpy 노드를 텀 없이 연달아 만들 때 간헐적으로 멈추는 '
@@ -105,12 +111,15 @@ def run_step(name: str, cmd: list, stdin_text: str = "", timeout: float = 10000)
 def main():
     args = parse_args()
 
-    if bool(args.strokes_json) == bool(args.svg_path):
+    cleanup_svg = False
+    svg_path = None
+    if args.start_from == 'brush':
+        # brush 부터 재개하면 그리기 자체를 안 하니 도안이 필요 없다.
+        print("[재개] --start-from=brush → pen_up/그리기/pen_down 생략, brush부터 이어서 실행")
+    elif bool(args.strokes_json) == bool(args.svg_path):
         print("[에러] --strokes-json 또는 --svg-path 중 정확히 하나만 지정하세요.")
         sys.exit(1)
-
-    cleanup_svg = False
-    if args.svg_path:
+    elif args.svg_path:
         svg_path = args.svg_path
         if not os.path.isfile(svg_path):
             print(f"[에러] SVG 없음: {svg_path}")
@@ -146,17 +155,20 @@ def main():
         return cmd
 
     try:
-        if not args.skip_pen:
+        skip_draw_stage = args.start_from == 'brush'
+
+        if not args.skip_pen and not skip_draw_stage:
             run_step('pen_up', motion_cmd('pen_up', args.pen_up_speed), stdin_text="\n")
             time.sleep(args.step_delay_s)
 
-        run_step('draw', [py, os.path.join(SCRIPT_DIR, 'lower_to_paper.py'),
-                          '--svg', svg_path, '--size', str(args.plate_size_mm),
-                          '--robot-id', args.robot_id, '--model', args.model],
-                  stdin_text="y\n")
-        time.sleep(args.step_delay_s)
+        if not skip_draw_stage:
+            run_step('draw', [py, os.path.join(SCRIPT_DIR, 'lower_to_paper.py'),
+                              '--svg', svg_path, '--size', str(args.plate_size_mm),
+                              '--robot-id', args.robot_id, '--model', args.model],
+                      stdin_text="y\n")
+            time.sleep(args.step_delay_s)
 
-        if not args.skip_pen:
+        if not args.skip_pen and not skip_draw_stage:
             run_step('pen_down', motion_cmd('pen_down', args.pen_down_speed), stdin_text="\n")
             time.sleep(args.step_delay_s)
 

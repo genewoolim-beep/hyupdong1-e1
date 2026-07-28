@@ -87,16 +87,16 @@ class RobotConfig:
     # 획 시작 이 개수만큼의 점을 느리게 긋는다(draw_vel × draw_start_slow_frac 속도).
     # 정지→이동 전환 시 Z 힘 루프가 지연돼 초반이 뜬 채(가늘게) 그어지는 걸 완화 — 천천히
     # 움직이면 힘제어가 접촉을 유지할 시간이 생겨 초반부터 힘이 제대로 들어간다. 0이면 끔.
-    # 6→5→4(추가 -20%, 저속구간 길이 단축), 0.4→0.34(-15%, 저속구간 속도 추가 감속).
-    draw_start_slow_pts: int = 4
+    # 6→5→4→3(구간이 너무 길다는 피드백으로 추가 단축), 0.4→0.34(-15%, 속도는 유지).
+    draw_start_slow_pts: int = 3
     draw_start_slow_frac: float = 0.34
     # 획 끝 이 개수만큼의 점도 느리게 긋는다(대칭 목적: 시작만 느리면 끝점은 순항 속도로
     # 달려와 radius=0 하드정지를 명령하는데, 힘제어 하 펜(289mm 지렛대)의 관성/드래그가
     # 다 못 멎고 목표점을 살짝 지나쳐 "꼭짓점보다 길게 삐져나오는" 오버슈트가 됨.
     # 특히 직선 구간이 길수록(예: 별 안쪽 Y 스포크가 꼭짓점까지 곧게 뻗는 경우) 순항 속도가
     # 높이 붙어 눈에 띄게 나타난다. 0이면 끔.
-    # 6→5→4(추가 -20%), 0.4→0.34(-15%) — 시작 구간과 동일하게 적용.
-    draw_end_slow_pts: int = 4
+    # 6→5→4→3(구간이 너무 길다는 피드백) — 시작 구간과 동일하게 적용.
+    draw_end_slow_pts: int = 3
     draw_end_slow_frac: float = 0.34
 
     # 그리기 시작 전 이동할 안전 준비자세(joint, deg). None 이면 생략.
@@ -111,6 +111,19 @@ class RobotConfig:
     # (스크래치 품질·안전에 가장 큰 영향. 실장비에서 draw_force_n·부호는 튜닝 필요)
     use_force_control: bool = False
     draw_force_n: float = 5.0                    # 표면을 누르는 목표 힘(N)
+    # 좌우 힘 그라디언트(선택 기능). force_split_center_by_mm 이 None 이면 비활성 —
+    # draw_force_n 하나만 그대로 씀(기존 동작 그대로). 설정하면 각 점의 Base Y 좌표를
+    # 이 중심값 기준으로 -half~+half(force_gradient_span_mm/2) 구간에서
+    # draw_force_n_right → draw_force_n_left 로 선형 보간해 목표힘을 부드럽게 바꾼다.
+    # [2026-07-28] 처음엔 왼쪽/오른쪽을 딱 잘라 나누고 경계에서 task_compliance_ctrl/
+    # set_stiffnessx 까지 다시 불렀는데, 진행 중이던 블렌드 이동과 얽혀 실기에서 에러 없이
+    # 완전히 멈춰버리는 문제가 있었다. 이제는 ① 획 시작 시 한 번만 컴플라이언스를 켜고,
+    # ② 그 뒤로는 목표힘만 갱신하는 가벼운 호출(_update_desired_force, set_desired_force만
+    # 재호출)로 매 점마다 부드럽게 보간해서 이 위험을 없앤다.
+    draw_force_n_left: float = 5.0
+    draw_force_n_right: float = 5.0
+    force_split_center_by_mm: Optional[float] = None
+    force_gradient_span_mm: float = 100.0
     # 힘제어 ON 직후 실제 목표힘까지 램프업되는 데 시간이 걸리는데, 그 전에 긋기 시작하면
     # 초반 구간이 힘이 덜 들어간 채로 그어져 흐리게/안 그어진다. 획마다 이 시간만큼 그냥
     # 대기한 뒤 본체를 긋는다(예전엔 순수 대기 대신 시작 몇 점을 절반속도로 긋는 식으로
@@ -120,7 +133,7 @@ class RobotConfig:
     # 안 놓았거나 표면 Z 가 크게 틀어지면 펜이 허공에서 목표힘에 못 미친 채(≈0N) 계속
     # 긋게 되는데, 이 값보다 낮으면 "접촉 없음"으로 보고 그 획에서 즉시 중단·복귀한다.
     # draw_force_n 보다 충분히 낮게(노이즈 여유) 잡아야 오탐이 안 남.
-    no_contact_force_n: float = 4.8
+    no_contact_force_n: float = 4.0
     # 접촉 판정을 '한 순간'이 아니라 짧은 시간 동안 |Fz| 를 여러 번 샘플링해 중앙값으로
     # 내린다(순간 노이즈로 힘이 잠깐 임계 밑으로 내려가도 오판 안 하도록). 아크릴이 있는데도
     # 없다고 나오던 오탐을 줄이는 핵심. samples×interval 이 분석 시간(기본 10×0.1s=1.0초).
@@ -192,6 +205,8 @@ class RobotController:
         self._DR_FC_MOD_ABS = 0
         # 아크릴 접촉 검사를 그리기당 '첫 획에서만' 한 번 하기 위한 플래그(execute 시작 시 리셋)
         self._contact_verified = False
+        # 좌우 힘 분리용: 지금 걸려있는 힘 값(_enable_z_force 가 갱신). 아직 안 켰으면 None.
+        self._active_force_n: Optional[float] = None
 
     # ── 로깅 헬퍼 ────────────────────────────────────────────
     def _info(self, msg: str):
@@ -286,11 +301,31 @@ class RobotController:
         self._movel(pos, radius=radius, ref=self._DR_BASE,
                     mod=self._DR_MV_MOD_ABS, ra=self._DR_MV_RA_DUPLICATE)
 
+    # ── 좌우 힘 분리: Base Y 좌표로 로봇 왼쪽/오른쪽 판정 ──────
+    def _base_y_of(self, py: float) -> float:
+        return self.cfg.paper_origin_y_mm + py * self.cfg.paper_y_sign
+
+    def _force_for_py(self, py: float) -> float:
+        """이 획의 y(용지 좌표) 지점에서 써야 할 목표 힘(N). force_split_center_by_mm 이
+        None 이면 분리 비활성 상태라 draw_force_n 하나만 그대로 반환(기존 동작).
+        설정돼 있으면 딱 자르지 않고 force_gradient_span_mm 구간에 걸쳐
+        draw_force_n_right → draw_force_n_left 로 선형 보간(부드러운 그라디언트)."""
+        c = self.cfg
+        if c.force_split_center_by_mm is None:
+            return c.draw_force_n
+        by = self._base_y_of(py)
+        # lower_to_paper.py 좌표계 정의와 동일: Base +Y = 로봇 왼쪽.
+        span = max(c.force_gradient_span_mm, 1e-6)
+        t = (by - c.force_split_center_by_mm) / span + 0.5
+        t = max(0.0, min(1.0, t))
+        return c.draw_force_n_right + (c.draw_force_n_left - c.draw_force_n_right) * t
+
     # ── 힘제어(compliance) 켜기/끄기 ─────────────────────────
     def _enable_z_force(self, force_n: float):
         """Base 기준 Z축에 일정한 힘을 인가(누름). XY 는 딱딱, Z 는 물렁(강성 설정)."""
         if self.cfg.dry_run:
             return
+        self._active_force_n = force_n   # 좌우 분리용: 지금 걸려있는 힘 값 기억
         self._set_ref_coord(self._DR_BASE)               # 힘 기준좌표 = Base
         self._task_compliance_ctrl()                     # 컴플라이언스 ON
         self._set_stiffnessx(self.cfg.compliance_stiffness, time=0.0)
@@ -301,6 +336,18 @@ class RobotController:
         # 실기에서 튀는 게 보이면 다시 0.15~0.3 쪽으로 올릴 것. 그래도 실기에서 완전히
         # 정착되기까지는 조금 더 걸려서, draw_stroke() 에서 cfg.force_ramp_wait_s(기본 2초)
         # 만큼 별도로 더 대기한다.
+        self._set_desired_force([0.0, 0.0, fz, 0.0, 0.0, 0.0],
+                                [0, 0, 1, 0, 0, 0], time=0.1, mod=self._DR_FC_MOD_ABS)
+
+    def _update_desired_force(self, force_n: float):
+        """이미 컴플라이언스가 켜진 상태에서 목표힘만 부드럽게 갱신한다. _enable_z_force 와
+        달리 task_compliance_ctrl/set_stiffnessx(모드·강성 재설정)는 다시 안 부르고
+        set_desired_force 만 재호출 — 진행 중인 블렌드 이동과 얽혀 멈춰버리는 위험 없이
+        목표힘만 매 점마다 조금씩 바꿀 수 있다(좌우 힘 그라디언트용)."""
+        if self.cfg.dry_run:
+            return
+        self._active_force_n = force_n
+        fz = self.cfg.force_z_sign * force_n
         self._set_desired_force([0.0, 0.0, fz, 0.0, 0.0, 0.0],
                                 [0, 0, 1, 0, 0, 0], time=0.1, mod=self._DR_FC_MOD_ABS)
 
@@ -389,7 +436,9 @@ class RobotController:
             # 1) 먼저 위치제어로 표면(surface_z)까지 정확히 내려가 접촉(공중서 힘 켜면 안 됨)
             self._movel_to(sx, sy, c.draw_height_mm)
             # 2) 그 지점부터 Z 힘제어 ON — Z강성이 낮아(예:20) 위치 영향 최소, 힘이 지배해야 함
-            self._enable_z_force(c.draw_force_n)
+            #    좌우 힘 분리가 설정돼 있으면 시작점이 속한 쪽 힘으로 켠다(본체 중 경계를
+            #    넘으면 _draw_body_movel 이 알아서 다시 전환).
+            self._enable_z_force(self._force_for_py(sy))
             # [한때 삭제했다가 복원] 시작 몇 점을 절반속도로 그어 "대기 없이" 램프업 시간을
             # 버는 방식을 써봤는데, 실기에서 그것만으론 힘이 덜 들어간 채로 초반 구간이
             # 흐리게/안 그어지는 문제가 있었다 → 결국 힘이 완전히 들어갈 때까지 그냥 대기.
@@ -401,7 +450,7 @@ class RobotController:
             if not self._contact_verified:
                 if not self._has_contact():
                     self._info(
-                        f"[에러] 표면 접촉 미감지(목표 {c.draw_force_n}N, 임계 {c.no_contact_force_n}N "
+                        f"[에러] 표면 접촉 미감지(목표 {self._active_force_n}N, 임계 {c.no_contact_force_n}N "
                         f"미만) — 아크릴판이 없거나 표면 높이가 잘못됐을 수 있습니다. "
                         f"그리기를 중단하고 원위치로 복귀합니다."
                     )
@@ -466,6 +515,20 @@ class RobotController:
         # z_override 를 주면(힘제어) 그 Z 를 목표로 긋는다(표면보다 살짝 아래 → 힘이 4N 유지).
         r = self.cfg.draw_blend_radius_mm
         z = self.cfg.draw_height_mm if z_override is None else z_override
+
+        # 저속구간 경계를 "점 단위 반올림"이 아니라 정확한 거리(mm)로 자르기 위해, 그
+        # 경계 지점에 보간점을 미리 삽입해둔다. RDP 단순화로 세그먼트 길이가 들쭉날쭉해져
+        # 있어서(예: 첫 세그먼트가 이미 8~9mm), 점 단위로만 끊으면 목표 거리(예: 6mm)를
+        # 훌쩍 넘겨 그 세그먼트 전체가 저속구간에 포함돼버리는 문제가 있었다(실기에서 발견).
+        if not self.cfg.dry_run:
+            start_ref_idx = 0 if include_first else 1   # pts[0] 에 해당하는 poly 인덱스
+            head = self._insert_point_at_distance(
+                poly[start_ref_idx:],
+                self.cfg.draw_start_slow_pts * self._SLOW_ZONE_SAMPLE_MM)
+            poly = list(poly[:start_ref_idx]) + head
+            poly = self._insert_point_at_distance(
+                poly, self.cfg.draw_end_slow_pts * self._SLOW_ZONE_SAMPLE_MM, from_end=True)
+
         pts = poly if include_first else poly[1:]
 
         n = len(pts)
@@ -473,7 +536,8 @@ class RobotController:
         # 원래 2mm 균일 샘플 기준으로 튜닝된 값(6점=12mm)인데, RDP 단순화로 점 간격이
         # 제각각(수mm~수십mm)이 되면서 점 개수 그대로 쓰면 단순화가 많이 된 획(점이 몇 개
         # 안 남음)은 전체가 슬로우존이 돼버리는 문제가 생긴다. 그래서 "점개수 × 2mm"를
-        # 목표 거리로 놓고, 그 거리에 도달할 때까지의 실제 점 수를 센다.
+        # 목표 거리로 놓고, 그 거리에 도달할 때까지의 실제 점 수를 센다(위에서 경계에 보간점을
+        # 미리 넣어뒀으므로 이제 그 점에서 정확히 끊긴다).
         slow_n = 0 if self.cfg.dry_run else self._slow_zone_point_count(
             pts, self.cfg.draw_start_slow_pts)
         # 끝도 마찬가지로 거리 기준. 순항 속도로 달려와 마지막 점(radius=0, 하드정지)에
@@ -496,6 +560,16 @@ class RobotController:
                 self._set_velx(self.cfg.draw_vel_mm_s * self.cfg.draw_end_slow_frac,
                                self.cfg.move_rot_vel_deg_s)
                 self._set_accx(self.cfg.draw_acc_mm_s2, self.cfg.move_rot_acc_deg_s2)
+            # [2026-07-28] 처음엔 여기서 _enable_z_force(모드·강성 재설정까지 포함)를
+            # 다시 불렀는데, 진행 중이던 블렌드 이동 대기열과 얽혀 에러 없이 완전히
+            # 멈춰버리는(행) 현상이 있었다. 이제는 목표힘만 갱신하는 가벼운 호출로 바꿔
+            # 매 점마다 부드럽게(딱 끊지 않고 그라디언트로) 힘을 조금씩 바꾼다.
+            if (self.cfg.use_force_control and not self.cfg.dry_run
+                    and self.cfg.force_split_center_by_mm is not None):
+                desired_force = self._force_for_py(py)
+                if (self._active_force_n is None
+                        or abs(desired_force - self._active_force_n) > 0.05):
+                    self._update_desired_force(desired_force)
             # 마지막 점은 radius=0 으로 '정확히' 찍는다. blend radius 를 마지막 점까지 주면
             # 코너를 잘라 끝점 ~1.5mm 앞에서 펜업이 시작돼 획이 짧아지고(닫힌 도형이 안 닫혀
             # 시작점과 ~2mm 벌어짐). 중간 점은 각도 기반 적응형 블렌드(완만하면 크게,
@@ -509,6 +583,30 @@ class RobotController:
             self._movel_to(px, py, z, radius=radius)
 
     _SLOW_ZONE_SAMPLE_MM = 2.0   # draw_start/end_slow_pts 를 튜닝했던 기준 샘플 간격
+
+    def _insert_point_at_distance(self, seq: Polyline, target_dist: float,
+                                  from_end: bool = False) -> Polyline:
+        """seq 의 시작(또는 끝, from_end=True)에서 target_dist(mm) 되는 지점에 정확히
+        보간점을 하나 삽입한다. 그 지점에 이미 점이 있으면(오차 1μm 이내) 그대로 둔다.
+        RDP 로 세그먼트가 길어져도 저속구간 경계가 항상 정확한 물리적 거리가 되게 하는 용도."""
+        if target_dist <= 0 or len(seq) < 2:
+            return list(seq)
+        work = list(reversed(seq)) if from_end else list(seq)
+        acc = 0.0
+        for i in range(1, len(work)):
+            ax, ay = work[i - 1]
+            bx, by = work[i]
+            seg = math.hypot(bx - ax, by - ay)
+            if seg < 1e-9:
+                continue
+            if acc + seg >= target_dist - 1e-6:
+                remain = target_dist - acc
+                if remain > 1e-6 and remain < seg - 1e-6:
+                    t = remain / seg
+                    work.insert(i, (ax + (bx - ax) * t, ay + (by - ay) * t))
+                break
+            acc += seg
+        return list(reversed(work)) if from_end else work
 
     def _slow_zone_point_count(self, pts: Polyline, n_pts_equiv: int,
                                from_end: bool = False) -> int:

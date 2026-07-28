@@ -80,12 +80,12 @@ def parse_args():
     ap.add_argument('--no-auto-z', dest='auto_z', action='store_false', default=True,
                     help='--surface-z 자동이동을 끄고 예전처럼 키보드로 눈으로 하강(안전하게 재확인하고 싶을 때)')
     ap.add_argument('--start-vel', type=float, default=52.0,
-                    help='start-z 까지 이동 속도(mm/s). 기본 52(40에서 +30%). 낮추면 더 천천히')
+                    help='start-z 까지 이동 속도(mm/s). 기본 52(40에서 +30%%). 낮추면 더 천천히')
     # 안전 리셋: 35→87.5→175→...→252까지 누적 상승시켰던 걸, 컨트롤러 재기동 후 클램핑
     # 없이 그대로 적용돼 위험해진 게 확인돼 최초 실기 검증값(35)으로 되돌림.
     ap.add_argument('--jump-vel', type=float, default=29.75,
                     help='z<값> 지정 점프 이동 속도(mm/s), --surface-z 자동하강에도 사용. '
-                         '기본 29.75(35에서 -15%). 점프 후에는 다시 15로 돌아가 미세조정은 그대로 느림')
+                         '기본 29.75(35에서 -15%%). 점프 후에는 다시 15로 돌아가 미세조정은 그대로 느림')
     ap.add_argument('--min-z', type=float, default=70.0,
                     help='자동 하강 안전 바닥(mm). 접촉 없이 이 높이 도달하면 정지(그 아래로 안 내려감). '
                          '기본 70mm(표면74 근처). 표면이 더 낮으면 이 값을 낮추세요')
@@ -95,8 +95,7 @@ def parse_args():
     ap.add_argument('--contact-n', type=float, default=3.0,
                     help='(--auto-contact 시) 이 힘(N) 이상 감지되면 자동 정지·표면기록. 기본 3N')
     ap.add_argument('--size', type=float, default=100.75,
-                    help='그림이 들어갈 정사각 작업영역 한 변(mm). 홈 XY 중심에 배치. '
-                         '기본 218.75(175에서 +25%)')
+                    help='그림이 들어갈 정사각 작업영역 한 변(mm). 홈 XY 중심에 배치. 기본 100.75mm')
     ap.add_argument('--rotate-deg', type=float, default=90.0,
                     help='도안을 작업영역 중심 기준으로 이 각도(도)만큼 회전(위에서 봤을 때 '
                          '반시계방향이 +). 기본 90 — 도안의 6시 방향(아래쪽)이 로봇쪽을 향하게 '
@@ -115,16 +114,24 @@ def parse_args():
     ap.add_argument('--press-mm', type=float, default=0.25,
                     help='(위치제어) 측정 표면보다 이만큼 더 눌러 긋는다(mm) = 일정 깊이=일정 압력 효과. '
                          '기본 0.25mm. 연하면 0.3~0.5 올리고, 과하면 0.15/0.1 로')
-    ap.add_argument('--force-n', type=float, default=5.8,
-                    help='아크릴을 누르는 목표 힘(N). 기본 5.8N(5.7→5.8). --force 로 켜면 이 힘으로 Fz 유지')
+    ap.add_argument('--force-n', type=float, default=6.0,
+                    help='아크릴을 누르는 목표 힘(N). 기본 6.0N(5.8→6.0). --force 로 켜면 이 힘으로 Fz 유지. '
+                         '--force-split 이면 이 값 대신 --force-n-left/right 를 씀')
+    ap.add_argument('--force-split', action=argparse.BooleanOptionalAction, default=True,
+                    help='도안을 로봇이 바라보는 방향 기준 좌/우로 나눠 다른 힘을 준다(기본 켬). '
+                         '끄려면 --no-force-split(이땐 --force-n 하나만 그대로 씀)')
+    ap.add_argument('--force-n-left', type=float, default=7.0,
+                    help='--force-split 켰을 때, 로봇 왼쪽(Base +Y 쪽) 영역에 쓰는 힘(N). 기본 7.0N(6.8→7.0)')
+    ap.add_argument('--force-n-right', type=float, default=5.0,
+                    help='--force-split 켰을 때, 로봇 오른쪽(Base -Y 쪽) 영역에 쓰는 힘(N). 기본 5.0N(4.5→5.0)')
     ap.add_argument('--force-sign', type=float, default=-1.0,
                     help='누르는 방향 부호. -1=Base -Z(아래로). 설치 자세에 맞춰 조정')
-    ap.add_argument('--stiffness-z', type=float, default=20.0,
+    ap.add_argument('--stiffness-z', type=float, default=10.0,
                     help='힘제어 Z 강성(N/m). 낮을수록 Z 위치제어가 약해지고 힘제어가 우선(=표면추종). '
-                         '기본 20(적당값 — 5까지 낮췄더니 툴이 떠서 불안정해 원래값으로 복귀). '
-                         '더 힘 우선 원하면 10, 튀면 30~100. XY·회전은 3000 고정')
+                         '기본 10(20→10, 더 힘 우선). 5까지 낮췄을 땐 툴이 떠서 불안정했던 이력이 '
+                         '있으니 실기에서 튀면 20~30 쪽으로 다시 올릴 것. XY·회전은 3000 고정')
     ap.add_argument('--draw-vel', type=float, default=None,
-                    help='그리기 속도(mm/s). 미지정 시 힘제어=10.57, 위치제어=37.62. 표면 울퉁불퉁하면 '
+                    help='그리기 속도(mm/s). 미지정 시 힘제어=12.68, 위치제어=37.62. 표면 울퉁불퉁하면 '
                          '힘제어에서 더 낮추기(예: 5). 힘 루프가 요철 따라가려면 느려야 함')
     ap.add_argument('--draw-acc', type=float, default=None,
                     help='그리기 가속도(mm/s^2). 미지정 시 힘제어=78.54, 위치제어=150')
@@ -424,14 +431,14 @@ def draw_svg_at_surface(args, surface_z: float, home):
         approach_height_mm=surface_z + 5.0,       # 시작점 위 접근
         travel_height_mm=surface_z + args.pen_up, # 획 사이 펜업(작게)
         tool_rx_deg=rx, tool_ry_deg=ry, tool_rz_deg=rz,   # 현재 자세 유지
-        # 힘제어 16.51→13.21→10.57mm/s(추가 -20%, 시작/끝 슬로우존 말고 순항 구간이
-        # 너무 빠르다는 피드백). 가속도는 한때 62.83→31.4(-50%, 하드정지 지점 오버슈트
-        # 완화용)로 낮췄다가 원래대로 복귀(전역으로 낮추면 코너 많은 곡선마다 재가속이
-        # 느려져 "곡선이 너무 느림"으로 나타났었음) → 이제 곡선 구간은 적응형 블렌드
-        # (draw_blend_radius_max_mm)가 코너 감속을 따로 완화해주니, 전역 가속도는
-        # 62.83→50.26(-20%)로 다시 살짝 낮춰도 곡선 체감 속도에 영향이 적다.
+        # 힘제어 16.51→13.21→10.57→12.68mm/s(다시 +20%, 저속구간 길이·속도 조정 후
+        # 순항 속도는 좀 더 올려도 괜찮다는 피드백). 가속도는 한때 62.83→31.4(-50%,
+        # 하드정지 지점 오버슈트 완화용)로 낮췄다가 원래대로 복귀(전역으로 낮추면 코너
+        # 많은 곡선마다 재가속이 느려져 "곡선이 너무 느림"으로 나타났었음) → 이제 곡선
+        # 구간은 적응형 블렌드(draw_blend_radius_max_mm)가 코너 감속을 따로 완화해주니,
+        # 전역 가속도는 62.83→50.26(-20%)로 다시 살짝 낮춰도 곡선 체감 속도에 영향이 적다.
         draw_vel_mm_s=(args.draw_vel if args.draw_vel is not None
-                       else (10.57 if args.force else 37.62)),
+                       else (12.68 if args.force else 37.62)),
         draw_acc_mm_s2=(args.draw_acc if args.draw_acc is not None
                         else (50.26 if args.force else 120.0)),
         # 획 사이 이동(펜업 상태) 60/300→51/255(-15%)로 같이 낮춤.
@@ -446,6 +453,14 @@ def draw_svg_at_surface(args, surface_z: float, home):
         # 일정 힘으로 눌러 아크릴을 긁는다. XY 는 위치제어(형태 유지), Z 만 힘추종.
         use_force_control=args.force,
         draw_force_n=args.force_n,
+        # 좌우 힘 분리(도안을 로봇이 바라보는 방향 기준). 중심선은 용지 중심(= 홈 XY)의
+        # Base Y 값 그대로 — origin_y 계산식(y0 - size/2*py_sign + off_y)에서 py=size/2를
+        # 대입하면 py_sign 항이 정확히 상쇄돼 항상 y0+off_y 가 된다.
+        draw_force_n_left=args.force_n_left,
+        draw_force_n_right=args.force_n_right,
+        force_split_center_by_mm=(y0 + args.off_y) if args.force_split else None,
+        # 딱 자르지 않고 도안 폭(size) 전체에 걸쳐 오른쪽→왼쪽 힘으로 부드럽게 보간.
+        force_gradient_span_mm=size,
         force_z_sign=args.force_sign,
         force_push_mm=args.force_push_mm,
         force_ramp_wait_s=args.force_ramp_wait,

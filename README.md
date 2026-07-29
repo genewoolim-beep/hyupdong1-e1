@@ -6,7 +6,7 @@ Doosan Robotics **M0609** 협동로봇 + **OnRobot RG2** 그리퍼로, 펜을 �
 
 > 처음 쓰는 분은 이 문서 순서대로(설치 → GUI 실행) 따라 하면 됩니다.
 > 터미널에서 SVG 하나만 빠르게 그려보고 싶다면 [6. 터미널에서 직접 그리기](#6-터미널에서-직접-그리기)로 바로 가세요.
-> 오늘까지의 상세 변경 이력은 [`CHANGELOG_2026-07-28.md`](CHANGELOG_2026-07-28.md) 참고.
+> 상세 변경 이력은 [`CHANGELOG_2026-07-28.md`](CHANGELOG_2026-07-28.md) 참고.
 
 ---
 
@@ -21,11 +21,14 @@ scripts/gui_bridge_server.py   ── 로컬 HTTP 브릿지(포트 8787, 표준 
    │  subprocess 로 아래를 순서대로 실행
    ▼
 scripts/run_signature_sequence.py   ── 오케스트레이터(하나라도 실패하면 즉시 중단)
-   ├─ run_drl_motion.py --motion pen_up     펜 집기
+   ├─ run_drl_motion.py --motion pen_up     펜 집기 (+ Modbus로 실제 파지 확인)
    ├─ lower_to_paper.py --svg <문양.svg>     아크릴에 실제로 그리기 (핵심 로직)
    ├─ run_drl_motion.py --motion pen_down   펜 반납
-   ├─ run_drl_motion.py --motion brush      붓으로 가루 제거
+   ├─ run_drl_motion.py --motion brush      붓으로 가루 제거 (+ Modbus로 파지 확인)
    └─ run_drl_motion.py --motion grab       완성판 집어서 전달
+
+# pen_up/brush 파지 실패 시: 그리퍼 열고 준비자세 자동 복귀 → GUI에 재시작 버튼 표시
+# brush 실패는 --start-from brush 로 그리기 재실행 없이 brush→grab만 이어서 재개 가능
 ```
 
 `lower_to_paper.py`가 내부적으로 쓰는 그리기 엔진은 `svg_drawing/robot_controller.py`
@@ -47,10 +50,13 @@ svg_drawing/                    # ament_python 패키지 (핵심 로직)
     robot_controller.py         #   실제 로봇 모션 실행(힘제어·블렌드·슬로우존 등 전부 여기)
 scripts/                        # 독립 실행 스크립트(빌드 불필요, python3 로 바로 실행)
   lower_to_paper.py             #   ★ SVG 한 장을 아크릴에 그리는 핵심 스크립트
-  drl_motions.py                #   pen_up/pen_down/brush/grab 모션 정의
+  drl_motions.py                #   pen_up/pen_down/brush/grab 모션 정의 + 파지 검증
   run_drl_motion.py             #   drl_motions.py 단일 모션 CLI 실행기
   run_signature_sequence.py     #   pen_up→그리기→pen_down→brush→grab 전체 오케스트레이터
   gui_bridge_server.py          #   브라우저 GUI ↔ 로봇 로컬 HTTP 브릿지(포트 8787)
+  gripper_modbus.py             #   그리퍼 Modbus TCP 직접 조회(실제 파지 여부 판정)
+  probe_gripper_modbus.py       #   그리퍼 Modbus 레지스터 탐색용 진단 스크립트
+  calibrate_pen_grasp.py / calibrate_grip_inplace.py  # 파지 임계값 실측 도구
   tcp_check.py / tcp_info.py    #   TCP(펜 오프셋 289mm) 리셋 감지 안전 가드
   emergency_stop.py             #   긴급정지
   go_home.py                    #   준비자세 복귀
@@ -73,7 +79,7 @@ cd ~/ws_cobot_pjt/ws_dsr/src
 git clone <이 저장소 URL> svg_drawing
 
 # 3) 파이썬 의존성
-pip install svgelements numpy
+pip install svgelements numpy pymodbus   # pymodbus는 그리퍼 파지 검증(7-6)에 필요
 
 # 4) 빌드(최초 1회 — 이후 scripts/, svg_drawing/*.py 수정은 재빌드 불필요)
 cd ~/ws_cobot_pjt/ws_dsr
@@ -134,6 +140,7 @@ python3 gui_bridge_server.py --port 8787
 | `POST /draw-signature` | body = GUI 문양의 로봇용 폴리라인 JSON → 전체 시퀀스 실행, `{job_id}` 반환 |
 | `POST /draw-sample` | body = `{"sample":"square"\|"hex_spiral"}` → `samples/`의 기존 SVG를 그대로 그림 |
 | `POST /pen-down` | 펜 내려놓기 단독 실행 |
+| `POST /resume-brush` | 도안을 다시 그리지 않고 brush→grab만 이어서 실행(브러쉬 파지 실패 후 재시작용) |
 | `POST /estop` | 즉시 정지 + 실행 중 시퀀스 프로세스 그룹 강제 종료 |
 | `POST /go-home` | 준비자세 복귀(다른 작업 실행 중이면 409로 거절) |
 | `GET /status?job=<id>` | `{state, log_tail, progress:{current,total,percent}}` — GUI가 폴링 |
@@ -160,6 +167,9 @@ python3 gui_bridge_server.py --port 8787
    `run_drl_motion.py` 양쪽에 실행 전 자동 검증(`tcp_check.py`)이 들어 있어, 오프셋이
    289mm±20mm를 벗어나면 자동으로 동작을 중단합니다. 경고가 뜨면 펜던트에서 TCP를
    다시 확인하세요.
+7. **펜/브러쉬를 못 집으면 자동으로 그리퍼를 열고 준비자세로 복귀**합니다(Modbus로 실제
+   파지 여부 확인, [7-6](#7-6-그리퍼-파지-검증-modbus) 참고). GUI에 전용 안내와 재시작
+   버튼이 뜨니 원인(펜/브러쉬 위치)을 확인한 뒤 눌러주세요.
 
 ---
 
@@ -184,7 +194,7 @@ python3 ~/ws_cobot_pjt/ws_dsr/src/svg_drawing/scripts/lower_to_paper.py --svg sa
 
 ## 7. 그리기 파이프라인 상세 사양
 
-현재(2026-07-28) `lower_to_paper.py` 기본값 기준입니다. 실기 튜닝값이니 함부로 크게
+현재(2026-07-29) `lower_to_paper.py` 기본값 기준입니다. 실기 튜닝값이니 함부로 크게
 바꾸지 말고, 바꿀 땐 한 파라미터씩 검증하세요.
 
 ### 7-1. 좌표·크기
@@ -194,7 +204,7 @@ python3 ~/ws_cobot_pjt/ws_dsr/src/svg_drawing/scripts/lower_to_paper.py --svg sa
 | 도안 크기(`--size`) | 100.75mm |
 | 회전(`--rotate-deg`) | 90° |
 | 오프셋(`--off-x` / `--off-y`) | 0.0mm / -10.0mm |
-| 표면 Z(`--surface-z`) | 9.5mm |
+| 표면 Z(`--surface-z`) | 9.2mm |
 | 점 샘플 간격 | 2.0mm |
 
 ### 7-2. TCP 안전 가드
@@ -203,24 +213,33 @@ python3 ~/ws_cobot_pjt/ws_dsr/src/svg_drawing/scripts/lower_to_paper.py --svg sa
 - 컨트롤러 재부팅 시 TCP가 플랜지(0mm)로 리셋되는 경우가 있어, 실행 직전
   `verify_pen_tcp()`가 실측 오프셋을 확인하고 289mm±20mm를 벗어나면 중단합니다.
 
-### 7-3. 힘제어 (하이브리드 위치/힘)
+### 7-3. 힘제어 (하이브리드 위치/힘 + 좌우 그라디언트)
 
 XY는 위치제어(강성 3000, 도형 정확도), Z만 힘제어(표면 추종).
 
 | 파라미터 | 값 | 비고 |
 |---|---|---|
-| 목표 힘(`--force-n`) | **5.7N** | |
-| Z축 강성(`--stiffness-z`) | **20** | 5까지 낮췄을 때 불안정했던 이력 있음 — 20이 검증된 값 |
+| 목표 힘(`--force-n`, 그라디언트 끈 경우) | 6.0N | |
+| 좌우 힘 그라디언트(`--force-split`) | 기본 **켬** | 도안을 로봇이 보는 방향 기준 좌/우로 힘을 다르게 |
+| 왼쪽 힘(`--force-n-left`) | **7.0N** (Base +Y 쪽) | |
+| 오른쪽 힘(`--force-n-right`) | **5.0N** (Base -Y 쪽) | |
+| Z축 강성(`--stiffness-z`) | **10** | 5까지 낮췄을 때 불안정했던 이력 있음 — 실기에서 튀면 20~30으로 |
 | XY·회전 강성 | 3000(고정) | 회전도 3000으로 딱딱하게: 긴 펜(289mm) 지렛대 효과로 인한 팁 흔들림 억제 |
 | 힘 램프 대기(`--force-ramp-wait`) | 2.0초 | 힘제어 ON 후 목표힘 안정될 때까지 그리기 전 대기 |
 | DRL 내부 힘 램프 시간 | 0.1초 | 너무 짧으면 오버슈트 위험 |
-| 접촉(아크릴 유무) 판정 임계값 | 4.8N | 최초 획에서만 검사, 미검출 시 자동 중단+원위치 |
+| 접촉(아크릴 유무) 판정 임계값 | 4.0N | 최초 획에서만 검사, 미검출 시 자동 중단+원위치 |
+
+**좌우 그라디언트 동작 방식**: 딱 자르지 않고 도안 폭 전체에 걸쳐 오른쪽→왼쪽 힘으로
+선형 보간됩니다. 획 시작 시 컴플라이언스 모드는 한 번만 켜고, 이후로는 목표힘만
+갱신하는 가벼운 호출(`_update_desired_force`)로 매 점마다 부드럽게 바꿉니다 —
+처음엔 경계에서 컴플라이언스 모드 자체를 재설정했다가 진행 중이던 이동과 얽혀
+**에러 없이 멈추는 문제**가 있었고, 지금 방식으로 바꿔 해결했습니다.
 
 ### 7-4. 그리기 속도·가속도·블렌드
 
 | 파라미터 | 값 |
 |---|---|
-| 그리기 속도(힘제어) | 13.21mm/s |
+| 그리기 속도(힘제어) | 12.68mm/s |
 | 그리기 가속도(힘제어) | 50.26mm/s² |
 | 이동(펜업) 속도/가속도 | 51.0mm/s / 255.0mm/s² |
 | 기본 블렌드 반경 | 0.8mm(진짜 코너용) |
@@ -228,14 +247,18 @@ XY는 위치제어(강성 3000, 도형 정확도), Z만 힘제어(표면 추종)
 | 코너 판정 각도 | 25° 이상이면 "진짜 코너"로 좁게 유지 |
 | RDP 점 단순화 허용오차 | 0.15mm |
 | 획 연장 비율 | 1.5%(마지막 진행 방향으로 직선 연장) |
-| 시작/끝 슬로우존 | 각 12mm(거리 기준), 40% 속도 |
+| 시작/끝 슬로우존 | 각 6mm(거리 기준, 정확한 mm 경계에 보간점 삽입), 34% 속도 |
 
 **곡선이 느린 이유와 해결**: 곡선은 촘촘한 점마다 계속 꺾여 매번 감속·재가속을
 반복해서 느립니다. RDP로 불필요한 중간점을 없애 세그먼트를 길게 만들고, 완만한
 지점은 블렌드 반경을 키워(최대 4mm) 더 빠르게 코너를 통과하되, 진짜 뾰족한
 꼭짓점(25° 이상)은 0.8mm로 좁게 유지해 도형이 뭉개지지 않게 했습니다.
 
-### 7-5. 그리퍼(OnRobot RG2)
+**슬로우존이 정확한 mm인 이유**: 점 개수만 세면 RDP로 세그먼트가 길어졌을 때 목표
+거리를 훌쩍 넘는 경우가 있어서, 목표 거리 지점에 보간점을 미리 삽입해 항상 정확한
+물리적 길이만큼만 감속하도록 만들었습니다.
+
+### 7-5. 그리퍼(OnRobot RG2) — DO 신호
 
 신호 방식: Doosan 디지털 출력(DO1~DO5) → OnRobot WebLogic 룰 매핑
 (`http://192.168.1.1/#/weblogic`).
@@ -257,6 +280,28 @@ XY는 위치제어(강성 3000, 도형 정확도), Z만 힘제어(표면 추종)
 | 놓기 전 | 1.0초 |
 | 놓은 후 | 5.0초 |
 
+### 7-6. 그리퍼 파지 검증 (Modbus)
+
+DO 신호만으로는 "닫으라고 명령했다"만 알 수 있지, 실제로 펜/브러쉬를 물었는지는
+알 수 없습니다(닫기 명령을 보내면 뭘 물었든 안 물었든 명령값은 똑같음). 그래서
+그리퍼(OnRobot Compute Box)의 **Modbus TCP**(`192.168.1.1:502`, device_id=65)에
+직접 접속해 실측값을 읽습니다.
+
+| 항목 | 값 |
+|---|---|
+| 사용 레지스터 | holding reg **275** |
+| 빈 상태(아무것도 안 물림) | ≈5 |
+| 펜을 물었을 때(실측) | ≈200 |
+| 브러쉬를 물었을 때(실측) | ≈254 |
+| 판정 임계값(`PEN_GRASP_MIN_REG`) | **80** |
+
+pen_up/brush가 파지한 직후 이 값을 확인해서, 80 미만이면 "못 집었다"고 판단 →
+그리퍼를 열고 준비자세로 자동 복귀 + `PenGraspError` 발생 → GUI에 전용 안내와
+재시작 버튼 표시. Modbus 응답 자체가 없으면(네트워크 문제 등) 판단을 포기하고
+그냥 진행합니다(그리퍼 이상만으로 매번 멈추는 게 더 나쁘다고 판단).
+
+필요 패키지: `pip install pymodbus`
+
 ---
 
 ## 8. 샘플 도안 (`samples/`)
@@ -264,10 +309,13 @@ XY는 위치제어(강성 3000, 도형 정확도), Z만 힘제어(표면 추종)
 | 파일 | 획 수 | 설명 |
 |---|---|---|
 | `merkaba.svg` | 5 | 별사면체(메르카바) — 정삼각형 2개 + 안쪽 사면체, 좌우대칭 정확히 검증됨 |
-| `hex_spiral.svg` | 9 | 육각별 나선 — 매 층 30°회전·0.866배 축소로 꼭짓점이 항상 이전 육각형에 정확히 닿음 |
-| `hex_spiral_full.svg` | 44 | hex_spiral의 원본(단순화 전) 버전, 보존용 |
+| `hex_spiral.svg` | 4 | 위로 꼭짓점 있는(pointy-top) 육각형만 남긴 버전(회전 30/90/150/210°, 0.75배씩 축소) |
+| `hex_spiral_full.svg` | 44 | hex_spiral의 최초 원본(30개 전 층 포함) 버전, 보존용 |
 | `square.svg` | - | 기본 동작 검증용 사각형 |
-| 그 외 | - | `mandala2`, `entj_star`, `tiger*` 등 초기 개발용 샘플 |
+| `tiger3*.svg` | - | 초기 개발용 호랑이 도안(벡터화·서명·회전 버전) |
+
+안 쓰는 초기 개발용 샘플(mandala, octagon, entj_star, tiger3 이전 버전 등)과 구버전
+스크립트(`make_spiral.py`, `lower_to_paper_초기_*.py`)는 정리되어 삭제되었습니다.
 
 GUI 인트로 화면의 "샘플: 사각형 / hex_spiral" 버튼이 이 파일들을 직접 참조합니다.
 내 SVG를 추가하려면 `samples/`에 넣고 `--svg` 옵션(터미널) 또는
@@ -297,6 +345,19 @@ source ~/ws_cobot_pjt/ws_dsr/install/setup.bash
 **Q. 그리퍼가 가끔 아크릴을 못 잡아요**
 → DO 신호 순서/대기시간 문제였던 이력이 있습니다(이미 수정됨 — `drl_motions.py`의
 `_grab_grasp()` 참고). 여전히 발생하면 파지 후 대기(현재 2.5초)를 더 늘려보세요.
+
+**Q. 펜/브러쉬를 못 집었다는 메시지가 떠요**
+→ [7-6](#7-6-그리퍼-파지-검증-modbus)의 Modbus 파지 검증이 작동한 것입니다. 펜/브러쉬가
+제자리에 있는지 확인하고 GUI의 [재시작] 버튼을 누르세요. 브러쉬 실패는 그리기를 다시
+안 하고 brush→grab만 이어서 재개합니다. `pymodbus`가 설치돼 있어야 이 기능이 동작하고,
+없으면(또는 그리퍼 네트워크 응답이 없으면) 검증을 건너뛰고 그냥 진행합니다.
+
+**Q. 그리다가 에러 없이 갑자기 멈춰요**
+→ 힘제어 관련 컴플라이언스 모드를 그리기 도중(움직이는 중간에) 다시 설정하면 진행 중인
+이동 대기열과 얽혀 멈추는 현상이 있었습니다(좌우 힘 그라디언트 개발 중 발견). 지금은
+모드는 획 시작 시 한 번만 켜고 이후로는 목표힘만 갱신하도록 고쳐져 있습니다 — 혹시 이
+증상이 다시 보이면 그리기 도중 컴플라이언스 관련 함수(`_task_compliance_ctrl`,
+`_set_stiffnessx`)를 호출하는 코드가 새로 들어간 게 없는지 확인하세요.
 
 **Q. 곡선이 직선보다 훨씬 느려요**
 → 블렌드 반경이 작을수록 코너 감속이 커지는 구조적 특성입니다. [7-4](#7-4-그리기-속도가속도블렌드)의
@@ -335,5 +396,6 @@ source ~/ws_cobot_pjt/ws_dsr/install/setup.bash
   다르면 `ros2 launch` 명령의 `host:=` 값을 바꾸세요.
 - ROS2 서비스 방식(`drawing.launch.py` + `/dsr01/draw_svg`)도 `svg_drawing_interfaces`에
   정의돼 있지만, 실사용은 위 GUI/스크립트 경로가 표준입니다.
-- 오늘까지의 상세 변경 이력(문제 상황·원인·해결)은 [`CHANGELOG_2026-07-28.md`](CHANGELOG_2026-07-28.md),
-  이전 이력은 [`CHANGELOG_2026-07-23.md`](CHANGELOG_2026-07-23.md) 참고.
+- 상세 변경 이력(문제 상황·원인·해결)은 [`CHANGELOG_2026-07-28.md`](CHANGELOG_2026-07-28.md),
+  이전 이력은 [`CHANGELOG_2026-07-23.md`](CHANGELOG_2026-07-23.md) 참고. 좌우 힘 그라디언트·
+  Modbus 파지 검증 등 이후 변경사항은 이 README와 `git log`가 최신 기준입니다.
